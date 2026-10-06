@@ -102,6 +102,17 @@ class AccountTests(unittest.TestCase):
         self.assertIsNone(two['requests'])
         self.assertEqual(two['lastActivityKind'], 'none')
 
+    def test_meta_xai_identity_preserved_without_quota_probes(self):
+        files = [{'provider': 'meta', 'account_type': 'oauth', 'auth_index': 'meta-one',
+                  'email': 'alex@example.com', 'plan_type': 'promax'},
+                 {'provider': 'xai', 'account_type': 'oauth', 'auth_index': 'xai-one',
+                  'email': 'sam@example.com', 'plan_type': 'self-serve-business-prolite'}]
+        result, targets = snapshot(files)
+        self.assertEqual([row['provider'] for row in result['accounts']], ['meta', 'xai'])
+        self.assertEqual([row['plan'] for row in result['accounts']], ['promax', 'self-serve-business-prolite'])
+        self.assertTrue(all(not row['quotaSupported'] for row in result['accounts']))
+        self.assertEqual(targets, {})
+
     def test_missing_detail_tokens_not_reported_as_partial_total(self):
         rows = [detail('one', '2026-10-06T00:00:00Z'), detail('one', '2026-10-06T00:01:00Z', tokens=None)]
         usage = {'apis': {'key': {'models': {'model': {'details': rows}}}}}

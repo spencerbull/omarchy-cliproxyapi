@@ -426,7 +426,7 @@ def iso_timestamp(value, numeric=False):
 
 def plan_label(value):
     allowed = {'free', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu', 'max', 'starter',
-               'ultra', 'basic', 'premium', 'individual'}
+               'ultra', 'basic', 'premium', 'individual', 'promax', 'self-serve-business-prolite'}
     return value.lower() if isinstance(value, str) and value.lower() in allowed else None
 
 
