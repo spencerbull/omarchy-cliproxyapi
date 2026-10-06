@@ -71,6 +71,14 @@ with tempfile.TemporaryDirectory(prefix="omarchy-usage-abi-") as directory:
         assert account["tokenMetrics"]["total"] == 120
         assert account["metricSamples"]["total"] == 1
         assert result["health"] == "ok"
+    # Rejected C buffers mark coverage partial without dereferencing the pointer.
+    for pointer, length in [(None, 1), (None, 4 * 1024 * 1024 + 1)]:
+        rejected = Buffer()
+        assert plugin.call(b"usage.handle", pointer, length, c.byref(rejected)) == 1
+        plugin.free(rejected.ptr, rejected.length)
+    response = call("management.handle", {"Method": "GET", "Path": path})
+    degraded = json.loads(base64.b64decode(response["Body"]))
+    assert degraded["partial"] and degraded["dropped"] == 2
     plugin.shutdown()
     state = Path(directory, "usage.json").read_text()
     assert "synthetic-never-persist" not in state and "synthetic-private-file" not in state

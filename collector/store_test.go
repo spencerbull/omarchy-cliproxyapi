@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -244,5 +245,50 @@ func TestDedupBoundAndRejectedWire(t *testing.T) {
 	}
 	if c.state.Dropped != 1 || !c.state.Partial {
 		t.Fatal("wire rejection missing from health")
+	}
+}
+
+type statInfo struct {
+	os.FileInfo
+	stat syscall.Stat_t
+}
+
+func (s statInfo) Sys() any { return &s.stat }
+func TestRejectForeignOwnerAndHardLinks(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(dir)
+	original := *info.Sys().(*syscall.Stat_t)
+	foreign := statInfo{FileInfo: info, stat: original}
+	foreign.stat.Uid = uint32(os.Geteuid() + 1)
+	if privateOwned(foreign, true) {
+		t.Fatal("foreign-owned directory accepted")
+	}
+	path := filepath.Join(dir, "usage.json")
+	_ = os.WriteFile(path, []byte(`{}`), 0600)
+	fileInfo, _ := os.Stat(path)
+	other := statInfo{FileInfo: fileInfo, stat: *fileInfo.Sys().(*syscall.Stat_t)}
+	other.stat.Uid = uint32(os.Geteuid() + 1)
+	if privateOwned(other, false) {
+		t.Fatal("foreign-owned file accepted")
+	}
+	if err := os.Link(path, filepath.Join(dir, "copy")); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := openCollector(dir); err == nil {
+		c.close()
+		t.Fatal("hard-linked state accepted")
+	}
+	_ = os.Remove(path)
+	_ = os.Remove(filepath.Join(dir, "copy"))
+	_ = os.Remove(filepath.Join(dir, ".collector.lock"))
+	lock := filepath.Join(dir, ".collector.lock")
+	_ = os.WriteFile(lock, nil, 0600)
+	_ = os.Link(lock, filepath.Join(dir, "lock-copy"))
+	if c, err := openCollector(dir); err == nil {
+		c.close()
+		t.Fatal("hard-linked lock accepted")
 	}
 }

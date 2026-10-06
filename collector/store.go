@@ -63,6 +63,21 @@ type collector struct {
 	storageOK bool
 }
 
+// Private files must belong to this process even when the server runs as root.
+func privateOwned(info os.FileInfo, directory bool) bool {
+	if info == nil {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return false
+	}
+	if directory {
+		return info.IsDir() && info.Mode().Perm() == 0700
+	}
+	return info.Mode().IsRegular() && info.Mode().Perm() == 0600 && stat.Nlink == 1
+}
+
 func openCollector(dir string) (*collector, error) {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
 		return nil, errors.New("data_dir must be an absolute clean path")
@@ -71,8 +86,8 @@ func openCollector(dir string) (*collector, error) {
 		return nil, errStorage
 	}
 	fi, err := os.Lstat(dir)
-	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0077 != 0 {
-		return nil, errors.New("data_dir must be a private directory (0700)")
+	if err != nil || !privateOwned(fi, true) {
+		return nil, errors.New("data_dir must be a private directory (0700) owned by the service user")
 	}
 	// Refuse symlink components, including an existing private leaf pointing elsewhere.
 	for p := dir; p != "/"; p = filepath.Dir(p) {
@@ -86,6 +101,11 @@ func openCollector(dir string) (*collector, error) {
 		return nil, errStorage
 	}
 	f := os.NewFile(uintptr(fd), "collector-lock")
+	lockInfo, statErr := f.Stat()
+	if statErr != nil || !privateOwned(lockInfo, false) {
+		f.Close()
+		return nil, errStorage
+	}
 	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		f.Close()
 		return nil, errors.New("collector data directory already in use")
@@ -95,7 +115,7 @@ func openCollector(dir string) (*collector, error) {
 	c.state = state{SchemaVersion: 1, StartedAt: now, UpdatedAt: now, Accounts: map[string]*account{}, Seen: []string{}}
 	path := filepath.Join(dir, "usage.json")
 	if fi, e := os.Lstat(path); e == nil {
-		if !fi.Mode().IsRegular() || fi.Mode().Perm()&0077 != 0 || fi.Size() > maxState {
+		if !privateOwned(fi, false) || fi.Size() > maxState {
 			c.closeLock()
 			return nil, errStorage
 		}

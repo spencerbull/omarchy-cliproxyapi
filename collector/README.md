@@ -37,7 +37,8 @@ retain all existing plugin settings, and:
 1. Place `omarchy-usage.so` in the configured `plugins.dir`. The basename must be
    `omarchy-usage.so` so its plugin ID matches the configuration below.
 2. Create `/var/lib/cliproxyapi/omarchy-usage` owned by the server service user,
-   with mode `0700`. For containers, mount a persistent private volume at that
+   with mode `0700`. Existing state and lock files must be mode `0600`,
+   owned by the effective service UID, regular files with only one hard link. For containers, mount a persistent private volume at that
    path with matching UID ownership. Use an absolute path with no symlink
    components; pre-existing group/world-accessible directories are rejected.
 3. Merge these entries into the existing server configuration:
