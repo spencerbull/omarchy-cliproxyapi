@@ -1,0 +1,4 @@
+*.so
+*.h
+usage.json
+.collector.lock
