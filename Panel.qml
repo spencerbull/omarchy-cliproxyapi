@@ -16,7 +16,7 @@ Panel {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: "󰚩"
+        text: "󰒋"
         tooltipText: "CLIProxyAPI · " + (root.service && root.service.snapshot ? "Usage & connections" : "Set up connection")
         onPressed: function(mouseButton) {
             if (mouseButton === Qt.MiddleButton && root.service) root.service.refresh()
@@ -31,8 +31,8 @@ Panel {
         bar: root.bar
         open: root.opened
         focusTarget: dashboard
-        contentWidth: fittedContentWidth(Style.space(640))
-        contentHeight: fittedContentHeight(Style.space(650), Style.space(650))
+        contentWidth: fittedContentWidth(Style.space(480))
+        contentHeight: fittedContentHeight(Style.space(660), Style.space(660))
         Dashboard {
             id: dashboard
             anchors.fill: parent

@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import "Display.js" as Display
 
 Item {
     id: root
@@ -14,10 +15,14 @@ Item {
     property string url: ""
     property string error: ""
     property var snapshot: null
+    property var quotas: ({})
+    property string quotaAccountId: ""
+    property string pendingOperation: ""
 
     function send(message) {
         if (!ready || busy) return false
         busy = true
+        pendingOperation = message.op
         error = ""
         backend.write(JSON.stringify(message) + "\n")
         return true
@@ -27,6 +32,9 @@ Item {
     }
     function refresh() {
         if (configured) send({op: "refresh"})
+    }
+    function checkQuota(id) {
+        if (send({op: "quota", id: id})) quotaAccountId = id
     }
     function forget() {
         if (send({op: "forget"})) snapshot = null
@@ -40,6 +48,9 @@ Item {
             return
         }
         busy = false
+        var operation = pendingOperation
+        pendingOperation = ""
+        quotaAccountId = ""
         if (message.type === "state") {
             ready = true
             configured = message.configured === true
@@ -47,15 +58,25 @@ Item {
             url = message.url || ""
             error = message.message || ""
             retryable = true
-            if (!configured) snapshot = null
+            if (!configured) { snapshot = null; quotas = ({}) }
             if (configured) refresh()
         } else if (message.type === "snapshot") {
+            if (operation === "connect") quotas = ({})
+            else {
+                quotas = Display.retainedQuotas(quotas, snapshot ? (snapshot.accounts || []) : [], message.accounts || [])
+            }
             snapshot = message
             configured = true
             remember = message.remember === true
             url = message.url || ""
             error = ""
             retryable = true
+        } else if (message.type === "quota") {
+            if (message.accountId) {
+                var updated = Object.assign({}, quotas)
+                updated[message.accountId] = message
+                quotas = updated
+            }
         } else if (message.type === "error") {
             error = message.message || "Unable to reach the proxy."
             configured = message.configured === true
@@ -74,6 +95,7 @@ Item {
         onExited: {
             root.ready = false
             root.busy = false
+            root.quotaAccountId = ""
             root.error = "The local helper stopped. Reload the plugin to reconnect."
         }
     }
