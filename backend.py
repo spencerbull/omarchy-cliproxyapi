@@ -2,6 +2,9 @@
 """Read-only CLIProxyAPI bridge. JSON lines on stdin/stdout; secrets stay here."""
 import datetime
 import http.client
+import hashlib
+import re
+from collections import Counter
 import ipaddress
 import json
 import math
@@ -170,6 +173,24 @@ class Client:
         self.key = validate_key(key)
 
     def get(self, endpoint, optional=False):
+        return self._request('GET', endpoint, optional=optional)
+
+    def quota(self, target):
+        family = target['provider']
+        urls = {'codex': 'https://chatgpt.com/backend-api/wham/usage',
+                'claude': 'https://api.anthropic.com/api/oauth/usage'}
+        if family not in urls or not target.get('auth_index'):
+            raise SafeError('Quota is unavailable for this account.')
+        headers = {'Authorization': 'Bearer $TOKEN$', 'Content-Type': 'application/json',
+                   'User-Agent': 'codex-cli/0.149.1' if family == 'codex' else 'claude-cli/2.1.280 (external, cli)'}
+        if family == 'claude':
+            headers['anthropic-beta'] = 'oauth-2025-04-20'
+        elif target.get('account_id'):
+            headers['Chatgpt-Account-Id'] = target['account_id']
+        payload = {'auth_index': target['auth_index'], 'method': 'GET', 'url': urls[family], 'header': headers}
+        return self._request('POST', '/api-call', payload=payload)
+
+    def _request(self, method, endpoint, optional=False, payload=None):
         parts = urlsplit(self.url)
         cls = http.client.HTTPSConnection if parts.scheme == 'https' else http.client.HTTPConnection
         kwargs = {'timeout': TIMEOUT}
@@ -177,9 +198,11 @@ class Client:
             kwargs['context'] = ssl.create_default_context()
         connection = cls(parts.hostname, parts.port, **kwargs)
         try:
-            connection.request('GET', parts.path + endpoint, headers={
-                'Authorization': 'Bearer ' + self.key, 'Accept': 'application/json',
-                'User-Agent': 'omarchy-cliproxyapi/1.0', 'Connection': 'close'})
+            connection.request(method, parts.path + endpoint,
+                body=json.dumps(payload).encode() if payload is not None else None,
+                headers={'Authorization': 'Bearer ' + self.key, 'Accept': 'application/json',
+                         'Content-Type': 'application/json',
+                         'User-Agent': 'omarchy-cliproxyapi/1.0', 'Connection': 'close'})
             response = connection.getresponse()
             if response.status in (401, 403):
                 raise SafeError('Management access was rejected. Check the key and remote management setting.')
@@ -259,7 +282,7 @@ def clean_model(value, forbidden):
     return value
 
 
-def snapshot(client, remember):
+def snapshot(client, remember, targets=None):
     # This endpoint is the connection probe; stop immediately after any auth error.
     auth = client.get('/auth-files')
     legacy = client.get('/usage', optional=True)
@@ -273,11 +296,14 @@ def snapshot(client, remember):
     connections = []
     history = {}
     forbidden = [client.key]
+    api_secrets = {key.rsplit('|', 1)[-1] for records in mapping(api_keys).values()
+                   for key in mapping(records) if isinstance(key, str)}
     for item in files:
         item = mapping(item)
         if item.get('account_type') == 'api_key' and isinstance(item.get('account'), str):
             forbidden.append(item['account'])
-        if item.get('account_type') == 'api_key' and api_keys is not None:
+        if (item.get('account_type') == 'api_key' and isinstance(item.get('account'), str)
+                and item['account'] in api_secrets):
             continue
         status = 'disabled' if item.get('disabled') else 'unavailable' if item.get('unavailable') else item.get('status')
         if status not in ('active', 'disabled', 'unavailable', 'error'):
@@ -331,11 +357,14 @@ def snapshot(client, remember):
     if api_keys is None:
         notices.append('API-key connection counters are unavailable on this server.')
     notices.append('Counters are server memory snapshots and may reset when the server restarts.')
+    accounts, quota_targets = build_accounts(client, files, api_keys, usage, forbidden, auth.get('observed_at'))
+    if targets is not None:
+        targets.update(quota_targets)
     return {'type': 'snapshot', 'url': client.url, 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
             'usageAvailable': usage_available, 'metricsLabel': 'Requests' if usage_available else 'Upstream attempts',
             'totalRequests': total, 'success': success, 'failed': failed, 'totalTokens': tokens,
             'models': sorted(models.values(), key=lambda row: -row['requests']), 'clients': clients,
-            'connections': connections, 'history': [{'label': label, 'requests': count}
+            'accounts': accounts, 'connections': connections, 'history': [{'label': label, 'requests': count}
                 for label, count in (sorted(history.items()) if usage_available else history.items())],
             'notices': notices, 'remember': remember}
 
@@ -347,14 +376,214 @@ def valid_day(value):
         return False
 
 
-def add_history(history, rows):
+def bucket_label(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-2][0-9]:[0-5][0-9](?:-[0-2][0-9]:[0-5][0-9])?", value):
+        return None
+    if any(int(part[:2]) > 23 for part in value.split('-')):
+        return None
+    if '-' in value:
+        start, end = [int(part[:2]) * 60 + int(part[3:]) for part in value.split('-')]
+        if (end - start) % 1440 != 10:
+            return None
+    return value
+
+
+def account_history(rows):
     if not isinstance(rows, list):
-        return
-    for row in rows:
+        return []
+    result = []
+    for row in rows[-20:]:
         row = mapping(row)
-        label = row.get('time')
-        if isinstance(label, str) and len(label) == 5 and label[2] == ':' and label[:2].isdigit() and label[3:].isdigit() and int(label[:2]) < 24 and int(label[3:]) < 60:
-            history[label] = history.get(label, 0) + number(row.get('success')) + number(row.get('failed'))
+        label = bucket_label(row.get('time'))
+        if label is None:
+            continue
+        success, failed = number(row.get('success')), number(row.get('failed'))
+        result.append({'label': label, 'requests': success + failed, 'success': success, 'failed': failed})
+    return result
+
+
+def add_history(history, rows):
+    for row in account_history(rows):
+        history[row['label']] = history.get(row['label'], 0) + row['requests']
+
+
+def iso_timestamp(value, numeric=False):
+    try:
+        if numeric and isinstance(value, (int, float)) and not isinstance(value, bool):
+            parsed = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        elif isinstance(value, str) and len(value) <= 40:
+            parsed = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if parsed.tzinfo is None:
+                return None
+        else:
+            return None
+        if not 1970 <= parsed.year <= 9998:
+            return None
+        return parsed.astimezone(datetime.timezone.utc).isoformat()
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+
+
+def plan_label(value):
+    allowed = {'free', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu', 'max', 'starter',
+               'ultra', 'basic', 'premium', 'individual'}
+    return value.lower() if isinstance(value, str) and value.lower() in allowed else None
+
+
+def account_label(value, fallback, forbidden):
+    if (isinstance(value, str) and len(value) <= 254
+            and re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}", value)
+            and not any(secret and secret in value for secret in forbidden)):
+        return value
+    return fallback
+
+
+def identity(value):
+    return value.strip() if isinstance(value, str) and value.strip() and len(value) <= 1024 else None
+
+
+def stable_id(url, source):
+    return hashlib.sha256(json.dumps([url, source], ensure_ascii=True).encode()).hexdigest()[:24]
+
+
+def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
+    """Only a unique auth_index joins request history to an upstream account."""
+    files = [row for row in files if isinstance(row, dict)]
+    indexes = Counter(identity(row.get('auth_index')) for row in files)
+    details_by_index = {}
+    for api in mapping(usage.get('apis')).values():
+        for name, model in mapping(mapping(api).get('models')).items():
+            rows = mapping(model).get('details')
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                row = mapping(row)
+                index = identity(row.get('auth_index'))
+                if index and indexes[index] == 1:
+                    details_by_index.setdefault(index, []).append((clean_model(name, forbidden), row))
+    accounts, targets = [], {}
+    observed = iso_timestamp(observed_at)
+    anchor = datetime.datetime.fromisoformat(observed).timestamp() if observed else time.time()
+    anchor = math.floor(anchor / 600) * 600
+    api_entries = [(group, key, mapping(raw)) for group, values in mapping(api_keys).items()
+                   for key, raw in mapping(values).items()]
+    api_secrets = {key.rsplit('|', 1)[-1] for _, key, _ in api_entries if isinstance(key, str)}
+    for position, raw in enumerate(files):
+        kind = raw.get('account_type') if raw.get('account_type') in ('oauth', 'api_key') else 'unknown'
+        if kind == 'api_key' and isinstance(raw.get('account'), str) and raw['account'] in api_secrets:
+            continue
+        family = provider(raw.get('provider', raw.get('type')))
+        index = identity(raw.get('auth_index'))
+        unique = bool(index and indexes[index] == 1)
+        fallback_identity = identity(raw.get('id')) or identity(raw.get('name')) or identity(raw.get('email'))
+        source = ['auth', index] if unique else ['auth', family, fallback_identity or position]
+        account_id = stable_id(client.url, source)
+        status = 'disabled' if raw.get('disabled') else 'unavailable' if raw.get('unavailable') else raw.get('status')
+        if status not in ('active', 'disabled', 'unavailable', 'error'):
+            status = 'unknown'
+        matches = details_by_index.get(index, []) if unique else []
+        success, failed = counter(raw.get('success')), counter(raw.get('failed'))
+        scope = 'Upstream attempts'
+        if (success is None or failed is None) and matches:
+            valid = [row for _, row in matches if isinstance(row.get('failed'), bool)]
+            success = sum(not row['failed'] for row in valid) if valid else None
+            failed = sum(row['failed'] for row in valid) if valid else None
+            scope = 'Recorded requests'
+        requests = success + failed if success is not None and failed is not None else None
+        models, tokens, token_known, stamps = {}, 0, False, []
+        missing_tokens = set()
+        for name, row in matches:
+            model = models.setdefault(name, {'name': name, 'requests': 0, 'tokens': None})
+            model['requests'] += 1
+            count = counter(mapping(row.get('tokens')).get('total_tokens'))
+            if count is not None:
+                model['tokens'] = (model['tokens'] or 0) + count
+                tokens += count
+                token_known = True
+            else:
+                missing_tokens.add(name)
+            stamp = iso_timestamp(row.get('timestamp'))
+            if stamp:
+                stamps.append(stamp)
+        for name in missing_tokens:
+            models[name]['tokens'] = None
+        last_request = max(stamps) if stamps else None
+        recent = account_history(raw.get('recent_requests'))
+        nonempty = [(i, row) for i, row in enumerate(recent) if row['requests'] > 0]
+        last_window = nonempty[-1][1]['label'] if nonempty else None
+        activity = 'exact' if last_request else 'window' if last_window else 'none'
+        rank = datetime.datetime.fromisoformat(last_request).timestamp() if last_request else 0
+        if not rank and nonempty:
+            # Approximate rank only; lastRequestAt remains null for bucket evidence.
+            rank = anchor - (len(recent) - 1 - nonempty[-1][0]) * 600
+        label = account_label(raw.get('email'), 'Account ' + str(len(accounts) + 1), forbidden) if kind != 'api_key' else 'API key ' + str(len(accounts) + 1)
+        plan = plan_label(mapping(raw.get('id_token')).get('plan_type')) or plan_label(raw.get('plan_type'))
+        supported = kind == 'oauth' and family in ('codex', 'claude') and unique
+        accounts.append({'id': account_id, 'provider': family, 'label': label, 'kind': kind, 'plan': plan,
+            'status': status, 'requests': requests, 'success': success, 'failed': failed,
+            'tokens': tokens if token_known and not missing_tokens else None, 'lastRequestAt': last_request,
+            'lastActivityLabel': last_window, 'lastActivityKind': activity, 'lastActivityRank': rank,
+            'history': recent, 'models': sorted(models.values(), key=lambda model: -model['requests']),
+            'nextRetryAt': iso_timestamp(raw.get('next_retry_after')), 'quotaSupported': supported,
+            'metricsLabel': scope})
+        if supported:
+            upstream_id = identity(mapping(raw.get('id_token')).get('chatgpt_account_id'))
+            if upstream_id and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', upstream_id):
+                upstream_id = None
+            targets[account_id] = {'provider': family, 'auth_index': index, 'account_id': upstream_id, 'plan': plan}
+    for group, key, raw in api_entries:
+        recent = account_history(raw.get('recent_requests'))
+        active = [(i, row) for i, row in enumerate(recent) if row['requests'] > 0]
+        success, failed = counter(raw.get('success')), counter(raw.get('failed'))
+        accounts.append({'id': stable_id(client.url, ['api', group, key]), 'provider': provider(group),
+            'label': 'API key ' + str(len(accounts) + 1), 'kind': 'api_key', 'plan': None, 'status': 'unknown',
+            'requests': success + failed if success is not None and failed is not None else None,
+            'success': success, 'failed': failed, 'tokens': None, 'lastRequestAt': None,
+            'lastActivityLabel': active[-1][1]['label'] if active else None,
+            'lastActivityKind': 'window' if active else 'none', 'lastActivityRank': anchor - (len(recent) - 1 - active[-1][0]) * 600 if active else 0,
+            'history': recent, 'models': [], 'nextRetryAt': None, 'quotaSupported': False,
+            'metricsLabel': 'Upstream attempts'})
+    return accounts, targets
+
+
+def quota_windows(envelope, family):
+    if envelope.get('status_code') != 200:
+        raise SafeError('The provider could not return quota for this account.')
+    payload = envelope.get('body')
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, UnicodeError):
+            raise SafeError('The provider returned an unsupported quota response.') from None
+    if not isinstance(payload, dict):
+        raise SafeError('The provider returned an unsupported quota response.')
+    candidates = []
+    if family == 'codex':
+        for group, prefix in [('rate_limit', ''), ('code_review_rate_limit', 'Code review · ')]:
+            info = mapping(payload.get(group))
+            for key in ('primary_window', 'secondary_window'):
+                row = mapping(info.get(key))
+                duration = counter(row.get('limit_window_seconds'))
+                label = {18000: '5 hours', 604800: 'Weekly'}.get(duration,
+                        'Primary' if key == 'primary_window' else 'Secondary')
+                reset = iso_timestamp(row.get('reset_at'), numeric=True)
+                delay = counter(row.get('reset_after_seconds'))
+                if reset is None and delay is not None and delay <= 366 * 86400:
+                    reset = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=delay)).isoformat()
+                candidates.append((prefix + label, row.get('used_percent'), reset))
+    else:
+        for key, label in [('five_hour', '5 hours'), ('seven_day', 'Weekly'),
+                           ('seven_day_opus', 'Opus weekly'), ('seven_day_sonnet', 'Sonnet weekly'),
+                           ('seven_day_oauth_apps', 'OAuth apps weekly'), ('seven_day_cowork', 'Cowork weekly')]:
+            row = mapping(payload.get(key))
+            candidates.append((label, row.get('utilization'), iso_timestamp(row.get('resets_at'))))
+    windows = []
+    for label, percent, reset in candidates:
+        if isinstance(percent, (int, float)) and not isinstance(percent, bool) and 0 <= percent <= 100 and math.isfinite(percent):
+            windows.append({'label': label, 'usedPercent': percent, 'resetAt': reset})
+    if not windows:
+        raise SafeError('This provider response does not include supported quota windows.')
+    return windows[:8], plan_label(payload.get('plan_type'))
 
 
 class Bridge:
@@ -362,6 +591,7 @@ class Bridge:
         self.store = store or CredentialStore()
         self.client_factory = client_factory
         self.session = None
+        self.targets = {}
 
     def state(self):
         return {'type': 'state', 'configured': self.session is not None,
@@ -384,29 +614,57 @@ class Bridge:
             if op == 'forget':
                 self.store.forget()
                 self.session = None
+                self.targets = {}
                 return self.state()
             if op == 'connect':
                 new = {'url': normalize_url(command.get('url')), 'key': validate_key(command.get('key')),
                        'remember': command.get('remember') is True}
-                result = snapshot(self.client_factory(new['url'], new['key']), new['remember'])
+                targets = {}
+                result = snapshot(self.client_factory(new['url'], new['key']), new['remember'], targets)
                 if new['remember']:
                     self.store.save(new)
                 else:
                     self.store.forget()
                 self.session = new
+                self.targets = targets
                 return result
+            if op == 'quota':
+                return self.fetch_quota(command.get('id'))
             if op != 'refresh':
                 raise SafeError('Unknown command.')
             if self.session is None:
                 raise SafeError('Set up the server URL and management key first.')
             session = self.session
-            return snapshot(self.client_factory(session['url'], session['key']), session['remember'])
+            targets = {}
+            result = snapshot(self.client_factory(session['url'], session['key']), session['remember'], targets)
+            self.targets = targets
+            return result
         except SafeError as error:
             return {'type': 'error', 'message': str(error), 'configured': self.session is not None,
                     'retryable': error.retryable}
         except Exception:
             return {'type': 'error', 'message': 'The connection could not be processed safely.',
                     'configured': self.session is not None, 'retryable': False}
+
+
+    def fetch_quota(self, account_id):
+        # Do not echo arbitrary input (including accidentally pasted keys).
+        valid_id = account_id if isinstance(account_id, str) and account_id in self.targets else ''
+        target = self.targets.get(valid_id)
+        result = {'type': 'quota', 'accountId': valid_id, 'windows': [], 'plan': target.get('plan') if target else None,
+                  'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        try:
+            if target is None or self.session is None:
+                raise SafeError('Refresh accounts before requesting quota for a supported account.')
+            client = self.client_factory(self.session['url'], self.session['key'])
+            windows, plan = quota_windows(client.quota(target), target['provider'])
+            result['windows'] = windows
+            result['plan'] = plan or result['plan']
+        except SafeError as error:
+            result['error'] = str(error)
+        except Exception:
+            result['error'] = 'The quota request could not be processed safely.'
+        return result
 
 
 def main():

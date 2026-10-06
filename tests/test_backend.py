@@ -45,6 +45,17 @@ def server(responses):
                 body = json.dumps(body).encode()
             self.wfile.write(body)
 
+        def do_POST(self):
+            length = int(self.headers.get('Content-Length', '0'))
+            payload = json.loads(self.rfile.read(length))
+            calls.append((self.path, self.headers.get('Authorization'), payload))
+            code, body, extra = responses.get(self.path, (404, {}, {}))
+            self.send_response(code)
+            for key, value in extra.items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
         def log_message(self, *args):
             pass
 
@@ -150,7 +161,7 @@ class AggregationTests(unittest.TestCase):
             '/api-key-usage': {'claude': {'https://private-endpoint|upstream-secret-example': {'success': 2, 'failed': 0}}}})
         result = backend.snapshot(client, False)
         output = json.dumps(result)
-        for token in [secret, 'private@example', 'private-file', 'private-account', '/private-path', 'PRIVATE-',
+        for token in [secret, 'private-file', 'private-account', '/private-path', 'PRIVATE-',
                       'private-endpoint', 'upstream-secret-example', client.key]:
             self.assertNotIn(token, output)
         self.assertEqual(result['totalRequests'], 7)
