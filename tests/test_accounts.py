@@ -68,6 +68,28 @@ class AccountTests(unittest.TestCase):
         self.assertIsNone(backend.bucket_label('25:00-25:10'))
         self.assertIsNone(backend.bucket_label('10:00-14:00'))
 
+    def test_newer_bucket_supersedes_old_exact_history_without_losing_timestamp(self):
+        files = [{'provider': 'codex', 'auth_index': 'one', 'recent_requests': [
+            {'time': '23:50-00:00', 'success': 0}, {'time': '00:00-00:10', 'success': 1}]}]
+        old = '2026-10-05T22:00:00Z'
+        usage = {'apis': {'key': {'models': {'model': {'details': [detail('one', old)]}}}}}
+        result, _ = snapshot(files, usage)
+        account = result['accounts'][0]
+        self.assertEqual(account['lastRequestAt'], '2026-10-05T22:00:00+00:00')
+        self.assertEqual(account['lastActivityKind'], 'window')
+        self.assertEqual(account['lastActivityLabel'], '00:00-00:10')
+        self.assertGreater(account['lastActivityRank'], backend.datetime.datetime.fromisoformat(account['lastRequestAt']).timestamp())
+
+    def test_exact_history_in_current_bucket_keeps_precision_and_ignores_server_timezone_label(self):
+        files = [{'provider': 'codex', 'auth_index': 'one', 'recent_requests': [
+            {'time': '18:50-19:00', 'success': 0}, {'time': '19:00-19:10', 'success': 1}]}]
+        for stamp in ['2026-10-06T00:00:00Z', '2026-10-06T00:03:00Z']:
+            usage = {'apis': {'key': {'models': {'model': {'details': [detail('one', stamp)]}}}}}
+            result, _ = snapshot(files, usage)
+            account = result['accounts'][0]
+            self.assertEqual(account['lastActivityKind'], 'exact')
+            self.assertEqual(account['lastActivityRank'], backend.datetime.datetime.fromisoformat(stamp).timestamp())
+
     def test_identity_plan_and_key_redaction(self):
         files = [{'provider': 'codex', 'account_type': 'oauth', 'auth_index': 'one',
                   'email': 'alex@example.com', 'name': 'PRIVATE-FILE', 'account': 'NEVER-ACCOUNT',
@@ -194,6 +216,28 @@ class QuotaTests(unittest.TestCase):
         for value in ['malformed', [], {'five_hour': {'utilization': True}}, {'five_hour': {'utilization': 10**300}}]:
             with self.assertRaises(backend.SafeError):
                 backend.quota_windows({'status_code': 200, 'body': value}, 'claude')
+
+    def test_fable5_scoped_window_prefers_active_and_uses_static_label(self):
+        payload = {'limits': [
+            {'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'Fable 5'}}, 'percent': 80},
+            {'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'fable5'}}, 'percent': 23,
+             'resets_at': '2026-10-10T00:00:00Z', 'is_active': True},
+            {'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'PRIVATE-MODEL'}}, 'percent': 51,
+             'is_active': True}], 'iguana_necktie': {'utilization': 99}}
+        windows, _ = backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')
+        self.assertEqual(windows, [{'label': 'Fable 5 weekly', 'usedPercent': 23, 'resetAt': '2026-10-10T00:00:00+00:00'}])
+        self.assertNotIn('PRIVATE', json.dumps(windows))
+
+    def test_fable_legacy_fallback_and_malformed_scoped_limits(self):
+        payload = {'limits': [{'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'fable'}},
+                               'percent': 101, 'is_active': True},
+                              {'kind': 'daily_scoped', 'scope': {'model': {'display_name': 'fable'}}, 'percent': 50}],
+                   'iguana_necktie': {'utilization': 7, 'resets_at': '2026-10-10T00:00:00Z'}}
+        windows, _ = backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')
+        self.assertEqual(windows[0]['usedPercent'], 7)
+        self.assertEqual(windows[0]['label'], 'Fable 5 weekly')
+        payload['limits'] = 'invalid'
+        self.assertEqual(backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')[0], windows)
 
     def test_explicit_protocol_success_and_isolated_failures(self):
         class QuotaClient(FakeClient):

@@ -513,9 +513,13 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
         last_window = nonempty[-1][1]['label'] if nonempty else None
         activity = 'exact' if last_request else 'window' if last_window else 'none'
         rank = datetime.datetime.fromisoformat(last_request).timestamp() if last_request else 0
-        if not rank and nonempty:
-            # Approximate rank only; lastRequestAt remains null for bucket evidence.
-            rank = anchor - (len(recent) - 1 - nonempty[-1][0]) * 600
+        if nonempty:
+            # Compare the bucket's UTC lower bound, inferred from its position.
+            # Retain an exact timestamp inside that bucket instead of downgrading it.
+            window_rank = anchor - (len(recent) - 1 - nonempty[-1][0]) * 600
+            if not last_request or window_rank > rank:
+                activity = 'window'
+                rank = window_rank
         label = account_label(raw.get('email'), 'Account ' + str(len(accounts) + 1), forbidden) if kind != 'api_key' else 'API key ' + str(len(accounts) + 1)
         plan = plan_label(mapping(raw.get('id_token')).get('plan_type')) or plan_label(raw.get('plan_type'))
         supported = kind == 'oauth' and family in ('codex', 'claude') and unique
@@ -544,6 +548,11 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
             'history': recent, 'models': [], 'nextRetryAt': None, 'quotaSupported': False,
             'metricsLabel': 'Upstream attempts'})
     return accounts, targets
+
+
+def valid_percent(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 100 and math.isfinite(value))
 
 
 def quota_windows(envelope, family):
@@ -577,9 +586,27 @@ def quota_windows(envelope, family):
                            ('seven_day_oauth_apps', 'OAuth apps weekly'), ('seven_day_cowork', 'Cowork weekly')]:
             row = mapping(payload.get(key))
             candidates.append((label, row.get('utilization'), iso_timestamp(row.get('resets_at'))))
+        # Fable 5 uses the provider's newer scoped limits array. Do not expose
+        # arbitrary model/scope names, or confuse other weekly limits with it.
+        limits = payload.get('limits')
+        fable = []
+        for raw in limits if isinstance(limits, list) else []:
+            row = mapping(raw)
+            kind = row.get('kind')
+            name = mapping(mapping(row.get('scope')).get('model')).get('display_name')
+            if (isinstance(kind, str) and kind.strip().lower() == 'weekly_scoped'
+                    and isinstance(name, str) and name.strip().lower().replace(' ', '') in ('fable', 'fable5')
+                    and valid_percent(row.get('percent'))):
+                fable.append(row)
+        if fable:
+            chosen = next((row for row in fable if row.get('is_active') is True), fable[0])
+            candidates.append(('Fable 5 weekly', chosen['percent'], iso_timestamp(chosen.get('resets_at'))))
+        else:
+            old_fable = mapping(payload.get('iguana_necktie'))
+            candidates.append(('Fable 5 weekly', old_fable.get('utilization'), iso_timestamp(old_fable.get('resets_at'))))
     windows = []
     for label, percent, reset in candidates:
-        if isinstance(percent, (int, float)) and not isinstance(percent, bool) and 0 <= percent <= 100 and math.isfinite(percent):
+        if valid_percent(percent):
             windows.append({'label': label, 'usedPercent': percent, 'resetAt': reset})
     if not windows:
         raise SafeError('This provider response does not include supported quota windows.')
