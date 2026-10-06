@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "spencerbull.cliproxyapi",
+  "name": "CLIProxyAPI",
+  "version": "0.1.0",
+  "author": "Spencer Bull",
+  "license": "MIT",
+  "description": "A private, read-only view of your AI proxy: usage, models, and connections.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {"service": "Service.qml", "barWidget": "Panel.qml"},
+  "barWidget": {
+    "displayName": "CLIProxyAPI",
+    "description": "Proxy usage and connection health",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
