@@ -8,7 +8,7 @@ Subscription limits and account usage, directly in the Omarchy bar. Switch betwe
 
 ## Install
 
-Requires Omarchy with its Quickshell plugin system and Python 3. No Python packages or build step.
+The desktop plugin requires Omarchy with its Quickshell plugin system and Python 3. It needs no Python packages or build step. For the complete installation, including server-side token collection, use [Install with an agent](#install-with-an-agent).
 
 ```sh
 omarchy plugin add https://github.com/spencerbull/omarchy-cliproxyapi --enable
@@ -24,6 +24,89 @@ omarchy restart shell
 Restarting reloads the bar and clears cached QML components, so the new interface takes effect. Remember your connection before restarting if you want it restored automatically.
 
 Click the server icon, enter your **server URL** and **management key**, and select **Connect**. Use the management key, not an inference API key. Remote servers require HTTPS and remote management enabled; loopback HTTP is supported. Reverse-proxy prefixes, `/v0/management`, and `/management.html` URLs are accepted.
+
+## Install with an agent
+
+Point your coding agent at this section to install **both** the Omarchy desktop
+plugin and its CLIProxyAPI server collector. Installing only the desktop plugin
+on a current v8 server shows request counts, but does not supply token history.
+The two components use the same server URL and management key.
+
+Copy this prompt into your agent:
+
+```text
+Install the complete CLIProxyAPI integration for my Omarchy desktop:
+https://github.com/spencerbull/omarchy-cliproxyapi#install-with-an-agent
+
+Read that section and collector/README.md, then install or update the desktop
+plugin and enable the usage collector on my existing CLIProxyAPI server.
+You may install the collector and restart that server as part of this task.
+Discover the existing deployment and available SSH/container access first;
+ask me for missing connection details if necessary. Preserve existing accounts,
+credentials, routing, plugin settings, collector history, and the running server
+version. Back up configuration before changing it. Keep secrets out of chat,
+commands, logs, screenshots, and Git. Have me enter the management key in the
+plugin's setup screen if there is no saved connection.
+
+Verify the running collector, desktop connection, and native Limits/Usage panes.
+Do not consume /usage-queue or send inference requests to manufacture test data.
+Report whether token data is arriving or collection is waiting for normal traffic.
+```
+
+### Agent installation steps
+
+1. **Inspect both machines.** Identify the Omarchy desktop and the existing
+   CLIProxyAPI server; they may be different hosts. Check the actual running
+   server version, service/container, architecture, libc, configuration path,
+   plugin directory, persistent mounts, and service UID. The collector targets
+   **CLIProxyAPI v8.0.16, C ABI 1, RPC schema 6**; verify compatibility before using
+   another version. Do not create a second proxy or replace the user's deployment.
+
+2. **Install the desktop plugin.** Use the [install/update commands above](#install).
+   Preserve local plugin edits and desktop configuration. If updating, restart
+   the Omarchy shell to clear imported QML caches; a session-only connection will
+   need to be entered again. Verify the plugin is enabled and the native panel
+   opens with both **Limits** and **Usage** tabs. Reuse a saved connection when
+   available; otherwise let the user enter the URL/key in the plugin UI. Credential
+   persistence is optional and must remain the user's choice.
+
+3. **Build and install the server collector.** Follow
+   [collector/README.md](collector/README.md) for the build, tests, configuration,
+   storage permissions, and endpoint contract. Build a shared library compatible
+   with the server's architecture and libc, including the container's runtime
+   when applicable. Install it as `omarchy-usage.so` in the existing plugin
+   directory. Put its state in a persistent, private directory owned by the
+   effective service UID: directory `0700`, state/lock files `0600`. Preserve any
+   existing collector state. For containers, configure paths as seen **inside**
+   the container and confirm the backing mount survives container recreation.
+
+4. **Enable with a rollback path.** Save a private backup of the current server
+   configuration and any collector binary being replaced. Merge the collector
+   settings into the existing `plugins` section without creating duplicate YAML
+   keys or overwriting other plugins. Preserve secrets, provider settings, and
+   routing. Apply through the deployment's normal service/container mechanism.
+   Compare a Compose file's image with the running image before recreating a
+   container; a stale file must not accidentally downgrade the server. Account
+   for bind-mounted config files when applying changes. Restart only the affected
+   proxy when needed. If startup or management health fails, restore the previous
+   configuration/binary and service state; retain collected history.
+
+5. **Verify the complete integration.** Through the existing authenticated
+   management connection, verify `omarchy-usage` is registered and effectively
+   enabled in `/v0/management/plugins`. Read
+   `/v0/management/plugins/omarchy-usage/summary`; expect `schemaVersion: 1` and
+   `source: "omarchy-usage"`, and report its `health`/`partial` flags. Reads must
+   leave records intact. Confirm state is persisted privately, then refresh the
+   desktop **Usage** pane and verify provider totals and account breakdowns.
+   Inspect only sanitized status/metrics; never print the management key or raw
+   credential responses. Stop automatic retries if authentication is rejected.
+
+Collection starts when the collector is enabled. Historical token usage is not
+backfilled, and accounts without new traffic can still show `—`. If no normal
+requests arrive during verification, report **installed and collecting, awaiting
+traffic** rather than claiming populated token metrics. Do not spend tokens on a
+probe, drain `/usage-queue`, or grant Muse's separate key-issuing permission as
+part of installation.
 
 ## Limits first
 
