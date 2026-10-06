@@ -43,7 +43,7 @@ function filtered(accounts, provider, query, sort, privateMode) {
         var delta = sort === "requests" ? ((b.requests === null ? -1 : b.requests) - (a.requests === null ? -1 : a.requests))
             : sort === "provider" ? String(a.provider).localeCompare(String(b.provider))
             : (Number(b.lastActivityRank || 0) - Number(a.lastActivityRank || 0))
-        return delta || String(a.id).localeCompare(String(b.id))
+        return delta || (sort === "provider" ? accountName(a, privateMode).localeCompare(accountName(b, privateMode)) : 0) || String(a.id).localeCompare(String(b.id))
     })
 }
 function providers(accounts) {
@@ -74,4 +74,83 @@ function retainedQuotas(quotas, before, after) {
     return retained
 }
 
-if (typeof module !== "undefined") module.exports = {retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}
+function resetShort(value, now) {
+    if (!value || !isFinite(Date.parse(value))) return "—"
+    var minutes = Math.ceil((Date.parse(value) - now) / 60000)
+    if (minutes <= 0) return "Due"
+    if (minutes < 60) return minutes + "m"
+    if (minutes < 1440) return Math.floor(minutes / 60) + "h" + (minutes % 60 ? minutes % 60 + "m" : "")
+    return Math.floor(minutes / 1440) + "d" + (Math.floor(minutes % 1440 / 60) ? Math.floor(minutes % 1440 / 60) + "h" : "")
+}
+function shortDate(value) {
+    if (!value || !isFinite(Date.parse(value))) return ""
+    var date = new Date(value)
+    return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()] + " " + date.getDate()
+}
+function money(cents) { return typeof cents === "number" && isFinite(cents) ? "$" + (cents / 100).toFixed(2) : "—" }
+function quotaFacts(quota) {
+    if (!quota) return ""
+    var facts = [], credits = quota.credits || {}, extra = quota.extraUsage || {}
+    if (credits.unlimited === true) facts.push("Unlimited credits")
+    else if (credits.balance !== null && credits.balance !== undefined) facts.push(compact(credits.balance) + " credits")
+    if (credits.resetCreditsAvailable !== null && credits.resetCreditsAvailable !== undefined) facts.push((credits.resetCreditsApplicable !== null && credits.resetCreditsApplicable !== undefined ? count(credits.resetCreditsApplicable) + "/" : "") + count(credits.resetCreditsAvailable) + (credits.resetCreditsApplicable !== null && credits.resetCreditsApplicable !== undefined ? " resets usable" : " resets reported"))
+    if (quota.renewalAt) facts.push("Renews " + shortDate(quota.renewalAt))
+    if (extra.enabled === false) facts.push("Extra usage off")
+    else if (extra.usedCredits !== null && extra.usedCredits !== undefined) {
+        var used = extra.unit === "USD cents" ? money(extra.usedCredits) : count(extra.usedCredits)
+        var cap = extra.unit === "USD cents" ? money(extra.monthlyLimit) : count(extra.monthlyLimit)
+        facts.push("Extra " + used + (extra.monthlyLimit !== null && extra.monthlyLimit !== undefined ? " / " + cap : ""))
+    }
+    if (extra.prepaidBalance !== null && extra.prepaidBalance !== undefined) facts.push(money(extra.prepaidBalance) + " prepaid")
+    if (quota.subscriptionActive === false) facts.push("Subscription inactive")
+    return facts.join(" · ")
+}
+function windowState(window) {
+    return window.isActive === false ? "Inactive" : window.allowed === false || window.limitReached === true ? "Blocked" : ""
+}
+function quotaWindows(quota) {
+    if (!quota) return []
+    var windows = (quota.windows || []).slice(), extra = quota.extraUsage
+    if (extra && extra.enabled === true && extra.usedPercent !== null && extra.usedPercent !== undefined)
+        windows.push({label:"Extra usage", usedPercent:extra.usedPercent, resetAt:null})
+    return windows
+}
+function quotaDetails(quota) {
+    if (!quota) return ""
+    var rows = []
+    if (quota.renewalAt) rows.push("Renewal: " + new Date(quota.renewalAt).toLocaleString())
+    var credits = quota.credits || {}
+    if (credits.balance !== null && credits.balance !== undefined) rows.push("Credit balance: " + credits.balance)
+    if (credits.resetCreditsApplicable !== null && credits.resetCreditsApplicable !== undefined) rows.push(count(credits.resetCreditsApplicable) + " applicable resets")
+    ;(quota.resetCredits || []).forEach(function(credit, index) {
+        rows.push("Reset " + (index + 1) + " expires " + (credit.expiresAt ? new Date(credit.expiresAt).toLocaleString() : "at an unreported time") + (credit.applicable === false ? " (not applicable)" : ""))
+    })
+    var extra = quota.extraUsage || {}
+    if (extra.onDemandUsed !== null && extra.onDemandUsed !== undefined) rows.push("On-demand " + money(extra.onDemandUsed) + " / " + money(extra.onDemandLimit))
+    return rows.join("\n")
+}
+function retryWait(quota, now) {
+    if (!quota) return 0
+    var last = Date.parse(quota.lastAttemptAt || quota.updatedAt || "")
+    return isFinite(last) ? Math.max(0, last + Math.max(0, Number(quota.retryAfter) || 0) * 1000 - now) : 0
+}
+function dueQuotaIds(accounts, quotas, consented, now, force) {
+    return accounts.filter(function(account) {
+        if (!account.quotaSupported || (account.quotaConsentRequired && consented[account.id] !== true)) return false
+        var cached = quotas[account.id]
+        if (!cached) return true
+        var last = Date.parse(cached.lastAttemptAt || cached.updatedAt || "")
+        var retryDelay = Math.max(0, Number(cached.retryAfter) || 0) * 1000
+        if (isFinite(last) && now < last + retryDelay) return false
+        return force || !isFinite(last) || now - last >= 300000
+    }).map(function(account) { return account.id })
+}
+function mergeQuota(previous, message) {
+    var merged = Object.assign({}, message, {lastAttemptAt:message.updatedAt})
+    if (message.error && previous && !previous.consentRequired) {
+        merged = Object.assign({}, previous, {error:message.error, lastAttemptAt:message.updatedAt, retryAfter:message.retryAfter || 0})
+    }
+    return merged
+}
+
+if (typeof module !== "undefined") module.exports = {windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "spencerbull.cliproxyapi",
   "name": "CLIProxyAPI",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Spencer Bull",
   "license": "MIT",
-  "description": "Signed-in AI accounts, request activity, and remaining usage limits.",
+  "description": "Subscription limits, reset times, and account activity in a compact native panel.",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {"service": "Service.qml", "barWidget": "Panel.qml"},
   "barWidget": {

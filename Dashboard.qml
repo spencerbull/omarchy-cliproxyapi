@@ -12,8 +12,8 @@ FocusScope {
     property bool settingsOpen: false
     property bool privateMode: false
     property bool connecting: false
+    property bool filterOpen: false
     property string selectedProvider: "all"
-    property string sortMode: "recent"
     property string expandedId: ""
     property double now: Date.now()
     readonly property var snapshotData: service && service.snapshot ? service.snapshot : ({})
@@ -21,18 +21,19 @@ FocusScope {
     readonly property bool setup: settingsOpen || !hasData
     readonly property var accounts: snapshotData.accounts || []
     readonly property var providerOptions: Display.providers(accounts)
-    readonly property var visibleAccounts: Display.filtered(accounts, selectedProvider, search.text, sortMode, privateMode)
-    readonly property var totals: Display.summary(visibleAccounts)
+    readonly property var visibleAccounts: Display.filtered(accounts, selectedProvider, search.text, "provider", privateMode)
+    readonly property int loadedCount: accounts.filter(account => service && service.quotas[account.id] && !service.quotas[account.id].error).length
+    readonly property real preferredHeight: setup ? Style.space(430) : Math.min(Style.space(560), Math.max(Style.space(190), accountList.implicitHeight + Style.space(filterOpen ? 143 : 106)))
 
     function submit() {
         if (service && service.connectTo(address.text.trim(), secret.text, remember.checked)) {
-            secret.clear()
-            connecting = true
+            secret.clear(); connecting = true
         }
     }
     function toggleAccount(id) { expandedId = expandedId === id ? "" : id }
     function resetScroll() { if (scroll.contentItem) scroll.contentItem.contentY = 0 }
     onPrivateModeChanged: if (privateMode) search.clear()
+    onFilterOpenChanged: if (!filterOpen) { search.clear(); selectedProvider = "all" }
     onSelectedProviderChanged: { expandedId = ""; resetScroll() }
     onSetupChanged: {
         resetScroll()
@@ -41,6 +42,7 @@ FocusScope {
     }
     Keys.onEscapePressed: {
         if (settingsOpen && hasData) settingsOpen = false
+        else if (filterOpen) filterOpen = false
         else if (expandedId) expandedId = ""
         else dismiss()
     }
@@ -59,138 +61,105 @@ FocusScope {
     Timer { interval: 15000; repeat: true; running: root.visible; onTriggered: root.now = Date.now() }
 
     ColumnLayout {
-        anchors.fill: parent
-        spacing: Style.space(14)
+        anchors.fill: parent; spacing: Style.space(10)
         RowLayout {
-            spacing: Style.space(10)
-            Ui.PanelHero {
-                Layout.fillWidth: true
-                title: "CLIProxyAPI"
-                meta: root.setup ? "ACCOUNT MONITOR" : root.accounts.length + " ACCOUNTS · " + Math.max(0, root.providerOptions.length - 1) + " PROVIDERS"
-                iconComponent: Component { Label { text: "󰒋"; font.pixelSize: Style.font.displayLarge } }
+            Layout.fillWidth: true; spacing: Style.space(6)
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: Style.space(3)
+                Label { text: "Usage limits"; font.pixelSize: Style.font.title; font.bold: true }
+                Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.5) }
+            }
+            Item { Layout.fillWidth: true }
+            Ui.PanelActionButton {
+                iconText: "󰍉"; tooltipText: "Filter subscriptions"; visible: !root.setup; focusable: true
+                onClicked: { root.filterOpen = !root.filterOpen; if (root.filterOpen) search.forceActiveFocus() }
             }
             Ui.PanelActionButton {
-                iconText: root.privateMode ? "󰈉" : "󰈈"
-                tooltipText: root.privateMode ? "Show account names" : "Hide account names"
-                visible: !root.setup; focusable: true
-                onClicked: root.privateMode = !root.privateMode
+                iconText: root.privateMode ? "󰈉" : "󰈈"; tooltipText: root.privateMode ? "Show account names" : "Hide account names"
+                visible: !root.setup; focusable: true; onClicked: root.privateMode = !root.privateMode
             }
             Ui.PanelActionButton {
-                iconText: "󰑐"; tooltipText: "Refresh account activity"
-                visible: !root.setup; enabled: root.service && !root.service.busy; focusable: true
-                onClicked: root.service.refresh()
+                iconText: "󰑐"; tooltipText: "Refresh all subscription limits"
+                visible: !root.setup; enabled: root.service && !root.service.busy && !root.service.refreshingLimits; focusable: true
+                onClicked: root.service.refresh(true)
             }
             Ui.PanelActionButton {
                 iconText: root.settingsOpen && root.hasData ? "󰅖" : "󰒓"
-                tooltipText: root.settingsOpen ? "Back to accounts" : "Connection settings"
-                visible: root.hasData; focusable: true
-                onClicked: root.settingsOpen = !root.settingsOpen
+                tooltipText: root.settingsOpen ? "Back to limits" : "Connection settings"
+                visible: root.hasData; focusable: true; onClicked: root.settingsOpen = !root.settingsOpen
             }
         }
         Ui.PanelSeparator { Layout.fillWidth: true }
         Label {
-            Layout.fillWidth: true
-            visible: root.service && root.service.error !== ""
-            text: (root.service ? root.service.error : "") + (root.hasData ? " Showing the last snapshot." : "")
-            color: Color.urgent; wrapMode: Text.Wrap
+            Layout.fillWidth: true; visible: root.service && root.service.error !== ""
+            text: (root.service ? root.service.error : "") + (root.hasData ? " Showing previous results." : "")
+            color: Color.urgent; wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
         }
-        ColumnLayout {
-            visible: !root.setup
-            Layout.fillWidth: true
-            spacing: Style.space(14)
-            RowLayout {
-                Layout.fillWidth: true
-                ColumnLayout {
-                    Layout.fillWidth: true; spacing: Style.space(3)
-                    Label { text: Display.count(root.totals.requests); font.pixelSize: Style.font.displayLarge; font.bold: true }
-                    Label { text: "RECORDED ATTEMPTS" + (root.totals.partial ? " · PARTIAL" : ""); font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.5) }
-                }
-                Item { Layout.fillWidth: true }
-                ColumnLayout {
-                    Layout.alignment: Qt.AlignBottom; spacing: Style.space(6)
-                    Label { text: root.totals.ready + " ready / " + root.visibleAccounts.length; font.pixelSize: Style.font.bodySmall }
-                    Label { text: Display.count(root.totals.failed) + " failed attempts"; color: root.totals.failed > 0 ? Color.urgent : Qt.alpha(Color.foreground, 0.5); font.pixelSize: Style.font.caption }
-                }
+        RowLayout {
+            visible: !root.setup && root.filterOpen; Layout.fillWidth: true; spacing: Style.space(7)
+            Ui.TextField {
+                id: search; objectName: "accountSearch"; Layout.fillWidth: true
+                placeholderText: "Filter accounts…"; Accessible.name: "Filter accounts"; selectByMouse: true
+                onTextChanged: root.resetScroll()
             }
-            Flow {
-                Layout.fillWidth: true; spacing: Style.space(3)
-                Repeater {
-                    model: root.providerOptions
-                    Ui.Button {
-                        required property var modelData
-                        text: modelData.label + " " + modelData.count
-                        selected: root.selectedProvider === modelData.value; focusable: true
-                        onClicked: root.selectedProvider = modelData.value
-                    }
-                }
+            Ui.Dropdown {
+                Layout.preferredWidth: Style.space(110); showLabel: false; value: root.selectedProvider
+                options: root.providerOptions; onChanged: value => root.selectedProvider = value
             }
-            RowLayout {
-                Layout.fillWidth: true
-                Ui.TextField {
-                    id: search; objectName: "accountSearch"
-                    Layout.fillWidth: true; placeholderText: "Filter accounts…"
-                    Accessible.name: "Filter accounts"; selectByMouse: true
-                    onTextChanged: root.resetScroll()
-                }
-                Ui.Dropdown {
-                    Layout.preferredWidth: Style.space(125); showLabel: false
-                    value: root.sortMode
-                    options: [{value: "recent", label: "Recent first"}, {value: "requests", label: "Most requests"}, {value: "provider", label: "By provider"}]
-                    onChanged: value => { root.sortMode = value; root.resetScroll() }
-                }
-            }
+        }
+        RowLayout {
+            visible: !root.setup; Layout.fillWidth: true
+            Label { text: root.accounts.length + " ACCOUNTS"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
+            Item { Layout.fillWidth: true }
+            Label { text: "LEFT     RESETS IN"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
         }
         Controls.ScrollView {
             id: scroll; objectName: "accountScroll"
-            Layout.fillWidth: true; Layout.fillHeight: true
-            clip: true; contentWidth: availableWidth
+            Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             Controls.ScrollBar.horizontal.policy: Controls.ScrollBar.AlwaysOff
             ColumnLayout {
-                width: scroll.availableWidth; spacing: Style.space(10)
+                width: scroll.availableWidth; spacing: Style.space(8)
                 ColumnLayout {
-                    visible: !root.setup; Layout.fillWidth: true; spacing: Style.space(6)
+                    id: accountList
+                    visible: !root.setup; Layout.fillWidth: true; spacing: Style.space(10)
                     Repeater {
                         model: root.visibleAccounts
                         AccountRow {
                             required property var modelData
                             Layout.fillWidth: true; account: modelData
-                            expanded: root.expandedId === modelData.id
-                            privateMode: root.privateMode; now: root.now
-                            quota: root.service && root.service.quotas ? (root.service.quotas[modelData.id] || null) : null
+                            expanded: root.expandedId === modelData.id; privateMode: root.privateMode; now: root.now
+                            quota: root.service ? (root.service.quotas[modelData.id] || null) : null
                             quotaBusy: root.service ? root.service.quotaAccountId === modelData.id : false
-                            busy: root.service ? root.service.busy : false
+                            quotaQueued: root.service ? root.service.quotaQueue.indexOf(modelData.id) !== -1 : false
+                            consented: root.service ? root.service.consentedAccounts[modelData.id] === true : false
+                            busy: root.service ? root.service.busy || root.service.refreshingLimits : false
                             onToggled: root.toggleAccount(modelData.id)
-                            onQuotaRequested: root.service.checkQuota(modelData.id)
+                            onQuotaRequested: consent => root.service.checkQuota(modelData.id, consent)
                         }
                     }
                     Label {
                         Layout.fillWidth: true; visible: root.visibleAccounts.length === 0
-                        text: root.accounts.length ? "No accounts match this filter." : "No accounts were returned by the proxy. Signed-in accounts will appear here."
-                        color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap
-                        topPadding: Style.space(20); bottomPadding: Style.space(20)
+                        text: root.accounts.length ? "No subscriptions match this filter." : "No signed-in accounts were returned by the proxy."
+                        color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap; topPadding: Style.space(10)
                     }
                 }
                 ColumnLayout {
-                    visible: root.setup; Layout.fillWidth: true; spacing: Style.space(14)
-                    Label { text: root.hasData ? "Connection" : "Connect your accounts"; font.pixelSize: Style.font.heading; font.bold: true }
+                    visible: root.setup; Layout.fillWidth: true; spacing: Style.space(12)
+                    Label { text: root.hasData ? "Connection" : "Connect your subscriptions"; font.bold: true }
                     Label {
                         Layout.fillWidth: true
-                        text: "Connect to CLIProxyAPI to see which accounts are being used, when they were last active, and how much allowance remains."
+                        text: "See remaining allowance and reset times across your signed-in accounts. Limits load automatically."
                         color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap
                     }
                     Ui.PanelSectionHeader { text: "SERVER URL" }
                     Ui.TextField {
-                        id: address; objectName: "serverUrl"
-                        Layout.fillWidth: true; placeholderText: "https://proxy.example.com"
-                        Accessible.name: "Server URL"; selectByMouse: true
-                        onAccepted: secret.forceActiveFocus()
+                        id: address; objectName: "serverUrl"; Layout.fillWidth: true; placeholderText: "https://proxy.example.com"
+                        Accessible.name: "Server URL"; selectByMouse: true; onAccepted: secret.forceActiveFocus()
                     }
                     Ui.PanelSectionHeader { text: "MANAGEMENT KEY" }
                     Ui.TextField {
-                        id: secret; objectName: "managementKey"
-                        Layout.fillWidth: true; placeholderText: "Enter management key"; password: true
-                        Accessible.name: "Management key"
-                        inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                        id: secret; objectName: "managementKey"; Layout.fillWidth: true; placeholderText: "Enter management key"; password: true
+                        Accessible.name: "Management key"; inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
                         onAccepted: if (text.length && address.text.length) root.submit()
                     }
                     Controls.CheckBox {
@@ -199,10 +168,11 @@ FocusScope {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: remember.checked ? "Saved in a private local file outside the plugin. The key is stored as plaintext." : "Session only. Your key stays in memory until the shell restarts."
+                        text: remember.checked ? "Stored in a private plaintext file outside the plugin." : "Session only. The key stays in memory."
                         color: Qt.alpha(Color.foreground, 0.5); wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
                     }
                     RowLayout {
+                        Layout.fillWidth: true
                         Ui.Button {
                             text: root.connecting ? "Connecting…" : "Connect"; selected: true; focusable: true
                             enabled: root.service && root.service.ready && !root.service.busy && address.text.trim().length && secret.text.length
@@ -210,28 +180,27 @@ FocusScope {
                         }
                         Item { Layout.fillWidth: true }
                         Ui.Button {
-                            text: "Forget connection"; visible: root.service && root.service.configured
-                            enabled: root.service && !root.service.busy; focusable: true
-                            onClicked: { secret.clear(); root.service.forget() }
+                            text: "Forget"; visible: root.service && root.service.configured
+                            enabled: root.service && !root.service.busy; focusable: true; onClicked: { secret.clear(); root.service.forget() }
                         }
                     }
-                    Ui.PanelSeparator { Layout.fillWidth: true }
                     Label {
                         Layout.fillWidth: true
-                        text: "Remote connections use HTTPS. Local HTTP is supported on loopback. Account limits are checked only when you ask."
-                        color: Qt.alpha(Color.foreground, 0.5); wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
+                        text: "HTTPS for remote servers. Local HTTP is supported on loopback. Muse quota access requires separate permission."
+                        color: Qt.alpha(Color.foreground, 0.45); wrapMode: Text.Wrap; font.pixelSize: Style.font.caption
                     }
                 }
             }
         }
-        Ui.PanelSeparator { Layout.fillWidth: true }
         RowLayout {
+            Layout.fillWidth: true
             Label {
                 Layout.fillWidth: true
-                text: !root.service || !root.service.ready ? "Starting…" : root.service.busy ? "Updating…" : root.snapshotData.updatedAt ? "Updated " + new Date(root.snapshotData.updatedAt).toLocaleTimeString(Qt.locale(), "hh:mm:ss") : "URL + management key"
-                color: Qt.alpha(Color.foreground, 0.5); font.pixelSize: Style.font.caption
+                text: !root.service || !root.service.ready ? "Starting…" : root.service.refreshingLimits ? "Refreshing limits… " + root.loadedCount + "/" + root.accounts.length
+                    : root.service.busy ? "Updating accounts…" : root.setup ? "PRIVATE CONNECTION" : root.loadedCount + "/" + root.accounts.length + " limits loaded · auto-refresh 5m"
+                color: Qt.alpha(Color.foreground, 0.45); font.pixelSize: Style.font.caption
             }
-            Label { text: root.setup ? "PRIVATE CONNECTION" : "Click an account for details"; color: Qt.alpha(Color.foreground, 0.4); font.pixelSize: Style.font.caption }
+            Label { visible: !root.setup; text: "Click for activity"; color: Qt.alpha(Color.foreground, 0.4); font.pixelSize: Style.font.caption }
         }
     }
     component Label: Text {

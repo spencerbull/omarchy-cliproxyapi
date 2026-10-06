@@ -46,3 +46,51 @@ test('quota cache survives same-account refresh but never a reused account slot'
     assert.deepEqual(d.retainedQuotas(quotas,[original],[{...original,...change}]),{});
   assert.deepEqual(d.retainedQuotas(quotas,[original],[]),{});
 });
+test('automatic queue covers supported subscriptions, gates Muse, and honors cache TTL', () => {
+  const list = [
+    {id:'codex',quotaSupported:true}, {id:'claude',quotaSupported:true},
+    {id:'muse',quotaSupported:true,quotaConsentRequired:true}, {id:'unknown',quotaSupported:false},
+  ];
+  assert.deepEqual(d.dueQuotaIds(list,{}, {},now,false), ['codex','claude']);
+  assert.deepEqual(d.dueQuotaIds(list,{}, {muse:true},now,false), ['codex','claude','muse']);
+  const cache = {codex:{updatedAt:new Date(now-120000).toISOString()},claude:{lastAttemptAt:new Date(now-300000).toISOString(),error:'Unavailable'}};
+  assert.deepEqual(d.dueQuotaIds(list,cache,{},now,false), ['claude']);
+  assert.deepEqual(d.dueQuotaIds(list,cache,{},now,true), ['codex','claude']);
+  cache.codex.retryAfter = 600;
+  assert.deepEqual(d.dueQuotaIds(list,cache,{},now,true), ['claude']);
+});
+test('failed refresh retains last good limits and timestamp but delays retries', () => {
+  const old = {windows:[{label:'Weekly',usedPercent:30}],updatedAt:'2026-10-06T11:00:00Z',plan:'pro'};
+  const failure = {error:'Rate limited',updatedAt:'2026-10-06T12:00:00Z',windows:[],retryAfter:600};
+  const actual = d.mergeQuota(old,failure);
+  assert.deepEqual(actual.windows,old.windows);
+  assert.equal(actual.updatedAt,old.updatedAt);
+  assert.equal(actual.lastAttemptAt,failure.updatedAt);
+  assert.equal(actual.error,'Rate limited');
+  assert.equal(d.mergeQuota(actual,{windows:[],updatedAt:'2026-10-06T12:10:00Z'}).error,undefined);
+});
+test('full quota presentation includes credits, renewal, reset allowances, and extra spending units', () => {
+  const quota = {windows:[{label:'Weekly',usedPercent:22}],renewalAt:'2026-11-01T12:00:00Z',
+    credits:{balance:1234.5,resetCreditsAvailable:2,resetCreditsApplicable:1},
+    resetCredits:[{expiresAt:'2026-10-10T12:00:00Z',applicable:true}],
+    extraUsage:{enabled:true,usedCredits:350,monthlyLimit:2000,usedPercent:17.5,unit:'USD cents'}};
+  const facts=d.quotaFacts(quota);
+  assert.match(facts,/1.2k credits/); assert.match(facts,/1\/2 resets usable/); assert.match(facts,/Renews Nov 1/);
+  assert.match(facts,/Extra \$3.50 \/ \$20.00/);
+  assert.equal(d.quotaWindows(quota).length,2);
+  assert.match(d.quotaDetails(quota),/1234.5/); assert.match(d.quotaDetails(quota),/1 applicable resets/);
+  assert.match(d.quotaDetails(quota),/Reset 1 expires/);
+  assert.equal(d.quotaFacts({credits:{balance:0,resetCreditsAvailable:0}}),'0 credits · 0 resets reported');
+});
+test('compact reset labels distinguish unknown and elapsed windows', () => {
+  assert.equal(d.resetShort(null,now),'—');
+  assert.equal(d.resetShort('2026-10-06T11:00:00Z',now),'Due');
+  assert.equal(d.resetShort('2026-10-06T14:14:00Z',now),'2h14m');
+  assert.equal(d.resetShort('2026-10-08T16:00:00Z',now),'2d4h');
+});
+test('blocked and inactive quota windows are not presented as usable allowance', () => {
+  assert.equal(d.windowState({allowed:false,usedPercent:5}),'Blocked');
+  assert.equal(d.windowState({limitReached:true,usedPercent:null}),'Blocked');
+  assert.equal(d.windowState({isActive:false,usedPercent:5}),'Inactive');
+  assert.equal(d.windowState({allowed:true,usedPercent:5}),'');
+});

@@ -10,16 +10,18 @@ Panel {
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    onOpenedChanged: if (opened && service && service.retryable) service.refresh()
+    onOpenedChanged: {
+        if (service) { service.panelOpen = opened; if (opened && service.retryable) service.refresh() }
+    }
 
     BarIconButton {
         id: button
         anchors.fill: parent
         bar: root.bar
         text: "󰒋"
-        tooltipText: "CLIProxyAPI · " + (root.service && root.service.snapshot ? "Usage & connections" : "Set up connection")
+        tooltipText: "CLIProxyAPI · " + (root.service && root.service.snapshot ? "Subscription limits" : "Set up connection")
         onPressed: function(mouseButton) {
-            if (mouseButton === Qt.MiddleButton && root.service) root.service.refresh()
+            if (mouseButton === Qt.MiddleButton && root.service) root.service.refresh(true)
             else root.toggle()
         }
     }
@@ -31,8 +33,8 @@ Panel {
         bar: root.bar
         open: root.opened
         focusTarget: dashboard
-        contentWidth: fittedContentWidth(Style.space(480))
-        contentHeight: fittedContentHeight(Style.space(660), Style.space(660))
+        contentWidth: fittedContentWidth(Style.space(380))
+        contentHeight: fittedContentHeight(dashboard.preferredHeight, Style.space(560))
         Dashboard {
             id: dashboard
             anchors.fill: parent
