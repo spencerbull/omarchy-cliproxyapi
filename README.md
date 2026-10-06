@@ -18,7 +18,10 @@ Already installed:
 
 ```sh
 omarchy plugin update spencerbull.cliproxyapi --yes
+omarchy restart shell
 ```
+
+Restarting reloads the bar and clears cached QML components, so the new interface takes effect. Remember your connection before restarting if you want it restored automatically.
 
 Click the server icon, enter your **server URL** and **management key**, and select **Connect**. Use the management key, not an inference API key. Remote servers require HTTPS and remote management enabled; loopback HTTP is supported. Reverse-proxy prefixes, `/v0/management`, and `/management.html` URLs are accepted.
 
