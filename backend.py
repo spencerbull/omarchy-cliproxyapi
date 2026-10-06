@@ -202,6 +202,8 @@ class Client:
             ('codex', 'subscription'): 'https://chatgpt.com/backend-api/subscriptions',
             ('codex', 'reset-credits'): 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
             ('xai', 'monthly'): 'https://cli-chat-proxy.grok.com/v1/billing',
+            ('xai', 'user'): 'https://cli-chat-proxy.grok.com/v1/user?include=subscription',
+            ('xai', 'settings'): 'https://cli-chat-proxy.grok.com/v1/settings',
             ('claude', 'reset-grants'): 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1',
             ('claude', 'profile'): 'https://api.anthropic.com/api/oauth/profile',
         }
@@ -913,7 +915,8 @@ def quota_data(envelope, family):
         products = first(config, 'productUsage', 'product_usage')
         for index, raw in enumerate(products if isinstance(products, list) else []):
             row = mapping(raw)
-            label = safe_feature(row.get('product'), 'Product ' + str(index+1))
+            product = row.get('product')
+            label = 'Grok Build' if product == 'GrokBuild' else safe_feature(product, 'Product ' + str(index+1))
             percent = first(row, 'usagePercent', 'usage_percent')
             if numeric(percent, 100) is not None:
                 windows.append(normalized_window('xai-product-' + str(index), label, 'Product limits', percent, reset, 604800 if weekly else None))
@@ -970,6 +973,20 @@ def quota_windows(envelope, family):
     return result['windows'], result['plan']
 
 
+def xai_subscription_plan(user, settings):
+    aliases = {'free': 'Free', 'grokfree': 'Free', 'supergrok': 'SuperGrok',
+               'supergrokpro': 'SuperGrok Pro', 'supergrokheavy': 'SuperGrok Heavy',
+               'xpremiumplus': 'X Premium+', 'xpremium': 'X Premium', 'grokpro': 'Grok Pro'}
+    values = [first(settings, 'subscription_tier_display', 'subscriptionTierDisplay'),
+              first(user, 'subscriptionTier', 'subscription_tier')]
+    for raw in values:
+        if isinstance(raw, str) and len(raw) <= 80:
+            key = re.sub(r'[^a-z0-9]', '', raw.lower())
+            if key in aliases:
+                return aliases[key]
+    return None
+
+
 def fetch_xai_billing(client, target):
     observations, notices = [], []
     retry_after = None
@@ -1000,6 +1017,19 @@ def fetch_xai_billing(client, target):
         if extra and any(value is not None for key,value in extra.items() if key not in ('enabled','unit')):
             result['extraUsage'] = extra
         result['notices'].extend(additional['notices'])
+    profile = {}
+    for resource in ('user', 'settings'):
+        try:
+            profile[resource] = quota_body(client.quota_extra(target, resource))
+        except SafeError as error:
+            if error.auth_failed:
+                raise
+            retry_after = max(retry_after or 0, error.retry_after or 0) or None
+        except Exception:
+            pass
+    result['plan'] = xai_subscription_plan(profile.get('user', {}), profile.get('settings', {}))
+    if result['plan'] is None:
+        notices.append('xAI subscription plan is unavailable.')
     result['notices'] = list(dict.fromkeys(result['notices'] + notices))
     if retry_after is not None:
         result['retryAfter'] = retry_after

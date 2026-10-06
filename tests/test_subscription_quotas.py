@@ -123,7 +123,7 @@ class QuotaTransportTests(unittest.TestCase):
                                              'billingPeriodEnd': '2026-11-01T00:00:00Z'}})
         client = XaiClient()
         result = backend.fetch_xai_billing(client, {})
-        self.assertEqual(client.calls, ['weekly', 'monthly'])
+        self.assertEqual(client.calls, ['weekly', 'monthly', 'user', 'settings'])
         self.assertEqual(result['windows'][0]['usedPercent'], 15)
         self.assertEqual(result['extraUsage']['unit'], 'USD cents')
         self.assertNotIn('PRIVATE', json.dumps(result))
