@@ -88,9 +88,11 @@ test('compact reset labels distinguish unknown and elapsed windows', () => {
   assert.equal(d.resetShort('2026-10-06T14:14:00Z',now),'2h14m');
   assert.equal(d.resetShort('2026-10-08T16:00:00Z',now),'2d4h');
 });
-test('blocked and inactive quota windows are not presented as usable allowance', () => {
+test('explicit blocking overrides scoped activity without hiding reported Fable usage', () => {
   assert.equal(d.windowState({allowed:false,usedPercent:5}),'Blocked');
   assert.equal(d.windowState({limitReached:true,usedPercent:null}),'Blocked');
-  assert.equal(d.windowState({isActive:false,usedPercent:5}),'Inactive');
+  for (const usedPercent of [0, 27, null])
+    assert.equal(d.windowState({isActive:false,usedPercent}), '');
+  assert.equal(d.windowState({isActive:false,allowed:false,usedPercent:5}), 'Blocked');
   assert.equal(d.windowState({allowed:true,usedPercent:5}),'');
 });

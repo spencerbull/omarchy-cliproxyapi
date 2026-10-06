@@ -106,7 +106,9 @@ function quotaFacts(quota) {
     return facts.join(" · ")
 }
 function windowState(window) {
-    return window.isActive === false ? "Inactive" : window.allowed === false || window.limitReached === true ? "Blocked" : ""
+    // Claude uses is_active to rank scoped observations. False does not erase
+    // a reported percentage or establish that the subscription is unavailable.
+    return window.allowed === false || window.limitReached === true ? "Blocked" : ""
 }
 function quotaWindows(quota) {
     if (!quota) return []

@@ -231,6 +231,20 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(windows[1]['label'], 'Scoped limit 3 weekly')
         self.assertNotIn('PRIVATE', json.dumps(windows))
 
+    def test_fable_inactive_observation_retains_reported_usage(self):
+        for percent in (0, 27):
+            with self.subTest(percent=percent):
+                payload = {'limits': [{'kind': 'weekly_scoped',
+                    'scope': {'model': {'display_name': 'Fable 5'}},
+                    'percent': percent, 'is_active': False,
+                    'resets_at': '2026-11-10T00:00:00Z'}]}
+                windows, _ = backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')
+                self.assertEqual(len(windows), 1)
+                self.assertEqual(windows[0]['usedPercent'], percent)
+                self.assertFalse(windows[0]['isActive'])
+                self.assertIsNone(windows[0]['allowed'])
+                self.assertIsNone(windows[0]['limitReached'])
+
     def test_fable_legacy_fallback_and_malformed_scoped_limits(self):
         payload = {'limits': [{'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'fable'}},
                                'percent': 101, 'is_active': True},

@@ -105,7 +105,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             limited = data.get('auth_index') == 'demo-account-3'
             body = {'five_hour': {'utilization': 100 if limited else 12, 'resets_at': (now + datetime.timedelta(hours=3)).isoformat()},
                 'seven_day': {'utilization': 94 if limited else 34, 'resets_at': (now + datetime.timedelta(days=2)).isoformat()},
-                'limits': [{'kind':'weekly_scoped', 'percent': 89 if limited else 20, 'resets_at':(now + datetime.timedelta(days=2)).isoformat(), 'is_active':True, 'scope':{'model':{'display_name':'Fable 5'}}}],
+                'limits': [{'kind':'weekly_scoped', 'percent': 0 if limited else 20, 'resets_at':(now + datetime.timedelta(days=2)).isoformat(), 'is_active':not limited, 'scope':{'model':{'display_name':'Fable 5'}}}],
                 'extra_usage': {'is_enabled':False}}
         elif url == 'https://api.meta.ai/muse-code/key':
             body = {'api_key':'synthetic-minted-discarded', 'is_subs_active':True, 'subs_tier_name':'pro',
