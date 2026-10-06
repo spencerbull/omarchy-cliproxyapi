@@ -35,6 +35,32 @@ def fixture():
     return {'observed_at': now.isoformat(), 'files': accounts}
 
 
+def usage_fixture():
+    """Recorded request tokens deliberately include partial reporting, not fake zeros."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = []
+    for index, account in enumerate(('demo-account-0', 'demo-account-1', 'demo-account-2', 'demo-account-3')):
+        for request in range(3):
+            tokens = {'input_tokens': (index + 1) * 1200 + request * 90,
+                      'output_tokens': 240 + request * 40, 'cached_tokens': 480 + request * 80,
+                      'reasoning_tokens': 60 + request * 10, 'total_tokens': (index + 1) * 1200 + 240 + request * 130}
+            if index == 1 and request == 2:
+                tokens.pop('cached_tokens')
+                tokens.pop('reasoning_tokens')
+                tokens.pop('total_tokens')
+            if index == 3:
+                tokens = {'output_tokens': 45 + request * 5}
+            rows.append({'auth_index': account, 'timestamp': (now - datetime.timedelta(minutes=90-index*15-request*5)).isoformat(),
+                         'failed': False, 'tokens': tokens})
+    rows.append({'auth_index': 'synthetic-removed-account', 'timestamp': now.isoformat(),
+                 'failed': False, 'tokens': {'input_tokens': 50, 'output_tokens': 10, 'total_tokens': 60}})
+    total = sum(row['tokens'].get('total_tokens', 0) for row in rows)
+    return {'usage': {'total_requests': len(rows), 'success_count': len(rows), 'failure_count': 0,
+                     'total_tokens': total, 'requests_by_day': {now.date().isoformat(): len(rows)},
+                     'apis': {'synthetic-client-key': {'total_requests': len(rows), 'total_tokens': total,
+                              'models': {'synthetic-model': {'total_requests': len(rows), 'total_tokens': total, 'details': rows}}}}}}
+
+
 class DemoHandler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -63,6 +89,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             self.reply(200, {'quota_calls': self.server.quota_calls, 'downloads': self.server.downloads})
         elif self.path == '/v0/management/auth-files':
             self.reply(200, fixture())
+        elif self.path == '/v0/management/usage' and self.server.usage_enabled:
+            self.reply(200, usage_fixture())
         elif self.path == '/v0/management/api-key-usage':
             self.reply(200, {})
         else:
@@ -70,6 +98,10 @@ class DemoHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not self.authorized():
+            return
+        if self.path in ('/demo/usage/enable', '/demo/usage/disable'):
+            self.server.usage_enabled = self.path.endswith('/enable')
+            self.reply(200, {'usage_enabled': self.server.usage_enabled})
             return
         if self.path == '/demo/fail-next':
             self.server.fail_next = True
@@ -124,11 +156,12 @@ class DemoHandler(BaseHTTPRequestHandler):
         self.reply(200, {'status_code': 200, 'body': json.dumps(body)})
 
 
-def create_server():
+def create_server(usage_enabled=True):
     server = ThreadingHTTPServer(('127.0.0.1', 0), DemoHandler)
     server.quota_calls = 0
     server.downloads = 0
     server.fail_next = False
+    server.usage_enabled = usage_enabled
     return server
 
 

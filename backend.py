@@ -417,7 +417,10 @@ def snapshot(client, remember, targets=None):
     if targets is not None:
         targets.update(quota_targets)
     return {'type': 'snapshot', 'url': client.url, 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            'usageAvailable': usage_available, 'metricsLabel': 'Requests' if usage_available else 'Upstream attempts',
+            'usageAvailable': usage_available,
+            'usageUnattributedRecords': sum(1 for _ in legacy_usage_records(usage)) - sum(row['usageRecords'] for row in accounts),
+            'tokenSemantics': 'Reported legacy counters: cache and reasoning may overlap input/output; cache read/write cannot be separated, and totals follow the server accounting.',
+            'metricsLabel': 'Requests' if usage_available else 'Upstream attempts',
             'totalRequests': total, 'success': success, 'failed': failed, 'totalTokens': tokens,
             'models': sorted(models.values(), key=lambda row: -row['requests']), 'clients': clients,
             'accounts': accounts, 'connections': connections, 'history': [{'label': label, 'requests': count}
@@ -502,21 +505,47 @@ def stable_id(url, source):
     return hashlib.sha256(json.dumps([url, source], ensure_ascii=True).encode()).hexdigest()[:24]
 
 
+LEGACY_TOKEN_FIELDS = {
+    'total': 'total_tokens', 'input': 'input_tokens', 'output': 'output_tokens',
+    'cached': 'cached_tokens', 'reasoning': 'reasoning_tokens',
+    # The legacy snapshot does not distinguish read versus creation cache tokens.
+    'cacheRead': None, 'cacheWrite': None,
+}
+
+
+def legacy_usage_records(usage):
+    for api in mapping(usage.get('apis')).values():
+        for name, model in mapping(mapping(api).get('models')).items():
+            rows = mapping(model).get('details')
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        yield name, row
+
+
+def legacy_token_metrics(matches):
+    metrics = {}
+    for name, field in LEGACY_TOKEN_FIELDS.items():
+        values = []
+        for _, row in matches:
+            value = mapping(row.get('tokens')).get(field) if field else None
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and 0 <= value <= 2**53-1 and int(value) == value):
+                values.append(int(value))
+        metrics[name] = {'value': sum(values) if values else None,
+                         'reported': len(values), 'records': len(matches)}
+    return metrics
+
+
 def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
     """Only a unique auth_index joins request history to an upstream account."""
     files = [row for row in files if isinstance(row, dict)]
     indexes = Counter(identity(row.get('auth_index')) for row in files)
     details_by_index = {}
-    for api in mapping(usage.get('apis')).values():
-        for name, model in mapping(mapping(api).get('models')).items():
-            rows = mapping(model).get('details')
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                row = mapping(row)
-                index = identity(row.get('auth_index'))
-                if index and indexes[index] == 1:
-                    details_by_index.setdefault(index, []).append((clean_model(name, forbidden), row))
+    for name, row in legacy_usage_records(usage):
+        index = identity(row.get('auth_index'))
+        if index and indexes[index] == 1:
+            details_by_index.setdefault(index, []).append((clean_model(name, forbidden), row))
     accounts, targets = [], {}
     observed = iso_timestamp(observed_at)
     anchor = datetime.datetime.fromisoformat(observed).timestamp() if observed else time.time()
@@ -584,6 +613,8 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
         accounts.append({'id': account_id, 'provider': family, 'label': label, 'kind': kind, 'plan': plan,
             'status': status, 'requests': requests, 'success': success, 'failed': failed,
             'tokens': tokens if token_known and not missing_tokens else None, 'lastRequestAt': last_request,
+            'tokenMetrics': legacy_token_metrics(matches), 'usageRecords': len(matches),
+            'usageFirstAt': min(stamps) if stamps else None, 'usageLastAt': last_request,
             'lastActivityLabel': last_window, 'lastActivityKind': activity, 'lastActivityRank': rank,
             'history': recent, 'models': sorted(models.values(), key=lambda model: -model['requests']),
             'nextRetryAt': iso_timestamp(raw.get('next_retry_after')), 'quotaSupported': supported,
@@ -604,6 +635,7 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
             'label': 'API key ' + str(len(accounts) + 1), 'kind': 'api_key', 'plan': None, 'status': 'unknown',
             'requests': success + failed if success is not None and failed is not None else None,
             'success': success, 'failed': failed, 'tokens': None, 'lastRequestAt': None,
+            'tokenMetrics': legacy_token_metrics([]), 'usageRecords': 0, 'usageFirstAt': None, 'usageLastAt': None,
             'lastActivityLabel': active[-1][1]['label'] if active else None,
             'lastActivityKind': 'window' if active else 'none', 'lastActivityRank': anchor - (len(recent) - 1 - active[-1][0]) * 600 if active else 0,
             'history': recent, 'models': [], 'nextRetryAt': None, 'quotaSupported': False,
