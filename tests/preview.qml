@@ -45,6 +45,10 @@ ShellRoot {
         function filter(provider: string): void { dashboard.filterOpen = true; dashboard.selectedProvider = provider }
         function scrollTo(value: int): void { preview.find(dashboard, "accountScroll").contentItem.contentY = value }
         function search(value: string): void { dashboard.filterOpen = true; preview.find(dashboard, "accountSearch").text = value }
+        function usage(): void { dashboard.activePane = "usage"; dashboard.resetScroll() }
+        function limits(): void { dashboard.activePane = "limits"; dashboard.resetScroll() }
+        function usageProvider(value: string): void { preview.find(dashboard, "usagePane").expandedProvider = value }
+        function usageMetric(value: string): void { preview.find(dashboard, "usagePane").metric = value }
         function overview(): void { dashboard.filterOpen = false; dashboard.expandedId = ""; dashboard.resetScroll() }
         function refreshAll(): void { backend.refresh(true) }
         function privacy(): void { dashboard.privateMode = !dashboard.privateMode }
@@ -55,7 +59,7 @@ ShellRoot {
                 accounts: backend.snapshot ? backend.snapshot.accounts.length : 0,
                 visible: dashboard.visibleAccounts.length, expanded: dashboard.expandedId !== "",
                 quotaCount: Object.keys(backend.quotas).length, queue: backend.quotaQueue.length, setup: dashboard.setup,
-                loaded: dashboard.loadedCount, refreshing: backend.refreshingLimits})
+                pane: dashboard.activePane, loaded: dashboard.loadedCount, refreshing: backend.refreshingLimits})
         }
     }
 }

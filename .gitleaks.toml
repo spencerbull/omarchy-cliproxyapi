@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented synthetic auth index used only in collector examples and tests"
+condition = "AND"
+paths = ['''collector/(README\.md|store_test\.go|test_abi\.py)$''']
+regexTarget = "secret"
+regexes = ['''^0123456789abcdef$''']

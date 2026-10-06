@@ -96,3 +96,60 @@ test('explicit blocking overrides scoped activity without hiding reported Fable 
   assert.equal(d.windowState({isActive:false,allowed:false,usedPercent:5}), 'Blocked');
   assert.equal(d.windowState({allowed:true,usedPercent:5}),'');
 });
+
+test('usage aggregates accounts once by provider and preserves partial token coverage', () => {
+  const metric = (value, reported=1, records=1) => ({value, reported, records});
+  const rows = [
+    {provider:'codex',requests:4,failed:0,usageRecords:2,tokenMetrics:{input:metric(120,2,2),cached:metric(80,1,2)},metricsLabel:'Upstream attempts'},
+    {provider:'codex',requests:6,failed:1,usageRecords:1,tokenMetrics:{input:metric(30),cached:metric(null,0)},metricsLabel:'Upstream attempts'},
+    {provider:'claude',requests:null,failed:null,usageRecords:0,tokenMetrics:{},metricsLabel:'Recorded requests'}
+  ];
+  const groups=d.usageGroups(rows), codex=groups.find(g=>g.provider==='codex');
+  assert.equal(codex.requests.value,10); assert.equal(codex.requests.partial,false);
+  assert.deepEqual(codex.tokenMetrics.input,{value:150,reported:3,records:3,partial:false});
+  assert.deepEqual(codex.tokenMetrics.cached,{value:80,reported:1,records:3,partial:true});
+  assert.equal(codex.tokenMetrics.total.value,null); // Never sum overlapping fields.
+  assert.equal(d.usageSummary(rows).requests.partial,true);
+  assert.equal(d.usageSummary(rows).tokenMetrics.input.partial,true);
+  assert.equal(d.usageSummary(rows).metricsLabel,'Mixed request counters');
+  assert.equal(d.usageSummary(rows).usageRecords,3);
+  assert.equal(d.metricText(codex.tokenMetrics.cached),'80*');
+});
+test('usage chart preserves zero and unknown without invalid widths', () => {
+  const groups=d.usageGroups([{provider:'codex',requests:0,tokenMetrics:{}},{provider:'claude',requests:null,tokenMetrics:{}}]);
+  assert.equal(d.usageMaximum(groups,'requests'),0);
+  assert.equal(d.metricRatio({value:0},0),0);
+  assert.equal(d.metricRatio({value:null},100),0);
+  assert.equal(d.metricRatio({value:25},100),0.25);
+  assert.equal(d.metricText(d.usageMetric(groups[0],'requests')),'—');
+  assert.equal(d.metricText(d.usageMetric(groups[1],'requests')),'0');
+  assert.equal(d.usageSummary([]).tokenMetrics.input.value,null);
+  assert.equal(d.usageSummary([]).requests.value,null);
+});
+test('usage aggregation reflects filtered accounts and latest exact or approximate activity', () => {
+  const rows=[{id:'a',provider:'codex',label:'work@example.com',requests:12,lastActivityRank:10,lastActivityKind:'exact',lastRequestAt:'2026-10-06T11:55:00Z'},
+    {id:'b',provider:'codex',label:'home@example.com',requests:8,lastActivityRank:20,lastActivityKind:'window',lastActivityLabel:'12:00-12:10'}];
+  assert.equal(d.usageSummary(rows).lastActivityKind,'window');
+  assert.equal(d.usageSummary(d.filtered(rows,'all','work','provider',false)).requests.value,12);
+  assert.equal(d.usageSummary(d.filtered(rows,'all','work','provider',true)).requests.value,null);
+});
+test('collector aggregation uses one persistent period and marks degraded totals partial', () => {
+  const rows=[{provider:'codex',requests:900,failed:30,usageSource:'collector',usageRequests:5,usageFailed:1,usagePartial:true,
+    tokenMetrics:{total:{value:120,reported:2,records:5}}},
+    {provider:'codex',requests:200,failed:0,usageSource:'collector',usageRequests:0,usageFailed:0,tokenMetrics:{}}];
+  const summary=d.usageSummary(rows);
+  assert.equal(summary.requests.value,5);
+  assert.equal(summary.failed.value,1);
+  assert.equal(summary.requests.partial,true);
+  assert.equal(summary.metricsLabel,'Collected attempts');
+  assert.equal(summary.tokenMetrics.total.value,120);
+  assert.equal(summary.tokenMetrics.total.partial,true);
+});
+test('unused attributable collector accounts do not make complete token totals partial', () => {
+  const empty={provider:'codex',usageSource:'collector',usageRequests:0,usageRecords:0,tokenMetrics:{}};
+  const active={provider:'codex',usageSource:'collector',usageRequests:2,usageRecords:2,
+    tokenMetrics:{input:{value:100,reported:2,records:2}}};
+  assert.deepEqual(d.usageSummary([active,empty]).tokenMetrics.input,{value:100,reported:2,records:2,partial:false});
+  assert.equal(d.usageSummary([empty]).tokenMetrics.input.value,null);
+  assert.equal(d.usageSummary([active,{...empty,usageRequests:null}]).tokenMetrics.input.partial,true);
+});

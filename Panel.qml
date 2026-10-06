@@ -19,7 +19,7 @@ Panel {
         anchors.fill: parent
         bar: root.bar
         text: "󰒋"
-        tooltipText: "CLIProxyAPI · " + (root.service && root.service.snapshot ? "Subscription limits" : "Set up connection")
+        tooltipText: "CLIProxyAPI · " + (root.service && root.service.snapshot ? "Limits and usage" : "Set up connection")
         onPressed: function(mouseButton) {
             if (mouseButton === Qt.MiddleButton && root.service) root.service.refresh(true)
             else root.toggle()

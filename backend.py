@@ -416,16 +416,19 @@ def snapshot(client, remember, targets=None):
     accounts, quota_targets = build_accounts(client, files, api_keys, usage, forbidden, auth.get('observed_at'))
     if targets is not None:
         targets.update(quota_targets)
+    unattributed = sum(1 for _ in legacy_usage_records(usage)) - sum(row['usageRecords'] for row in accounts)
+    collector = collector_usage(client, accounts, files)
     return {'type': 'snapshot', 'url': client.url, 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            'usageAvailable': usage_available,
-            'usageUnattributedRecords': sum(1 for _ in legacy_usage_records(usage)) - sum(row['usageRecords'] for row in accounts),
+            'usageAvailable': usage_available, 'tokenUsageAvailable': usage_available,
+            'usageSource': 'legacy' if usage_available else 'unavailable',
+            'usageUnattributedRecords': unattributed,
             'tokenSemantics': 'Reported legacy counters: cache and reasoning may overlap input/output; cache read/write cannot be separated, and totals follow the server accounting.',
             'metricsLabel': 'Requests' if usage_available else 'Upstream attempts',
             'totalRequests': total, 'success': success, 'failed': failed, 'totalTokens': tokens,
             'models': sorted(models.values(), key=lambda row: -row['requests']), 'clients': clients,
             'accounts': accounts, 'connections': connections, 'history': [{'label': label, 'requests': count}
                 for label, count in (sorted(history.items()) if usage_available else history.items())],
-            'notices': notices, 'remember': remember}
+            'notices': notices, 'remember': remember, **collector}
 
 
 def valid_day(value):
@@ -642,6 +645,91 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
             'quotaConsentRequired': False, 'quotaReason': 'Subscription quota is unavailable for API-key connections.',
             'metricsLabel': 'Upstream attempts'})
     return accounts, targets
+
+
+COLLECTOR_ROUTE = '/plugins/omarchy-usage/summary'
+COLLECTOR_SEMANTICS = ('SDK-reported tokens; cache and reasoning may overlap input/output. '
+                       'Zero submetrics are normalized SDK values; all-zero records remain unknown.')
+
+
+def usage_counter(value):
+    if (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 2**53-1 and int(value) == value):
+        return int(value)
+    return None
+
+
+def collector_usage(client, accounts, files):
+    """Read only our fixed, management-authenticated observer export. Never a queue."""
+    try:
+        payload = client.get(COLLECTOR_ROUTE, optional=True)
+    except SafeError as error:
+        if error.auth_failed:
+            raise
+        return {'collectorNotice': 'Collector could not be read. Showing server snapshot data.'}
+    if payload is None:
+        return {}
+    if (payload.get('schemaVersion') != 1 or payload.get('source') != 'omarchy-usage'
+            or not isinstance(payload.get('accounts'), list) or len(payload['accounts']) > 10000
+            or not iso_timestamp(payload.get('startedAt'))
+            or not isinstance(payload.get('partial'), bool) or payload.get('health') not in ('ok', 'degraded')):
+        return {'collectorNotice': 'Collector format is unsupported. Showing server snapshot data.'}
+    # Validate completely before replacing any legacy account data.
+    rows, seen = [], set()
+    for raw in payload['accounts']:
+        raw = mapping(raw)
+        index, family = identity(raw.get('authIndex')), provider(raw.get('provider'))
+        count, failed = usage_counter(raw.get('requests')), usage_counter(raw.get('failed'))
+        first_at, last_at = iso_timestamp(raw.get('firstRequestAt')), iso_timestamp(raw.get('lastRequestAt'))
+        key = (index, family)
+        if (not index or key in seen or count is None or failed is None or failed > count
+                or (count and (not first_at or not last_at or first_at > last_at))):
+            return {'collectorNotice': 'Collector data is incomplete or invalid. Showing server snapshot data.'}
+        seen.add(key)
+        metrics = {}
+        for name in LEGACY_TOKEN_FIELDS:
+            value = mapping(raw.get('tokenMetrics')).get(name)
+            samples = usage_counter(mapping(raw.get('metricSamples')).get(name))
+            if samples is None or samples > count or (value is not None and usage_counter(value) is None) or (samples > 0) != (value is not None):
+                return {'collectorNotice': 'Collector metrics are invalid. Showing server snapshot data.'}
+            metrics[name] = {'value': value, 'reported': samples, 'records': count}
+        rows.append((index, family, count, failed, first_at, last_at, metrics))
+    indexes = Counter(identity(mapping(row).get('auth_index')) for row in files)
+    by_id = {a['id']: a for a in accounts}
+    join = {}
+    partial = payload['partial'] or payload['health'] != 'ok'
+    for raw in files:
+        raw = mapping(raw)
+        index = identity(raw.get('auth_index'))
+        if index and indexes[index] == 1:
+            account = by_id.get(stable_id(client.url, ['auth', index]))
+            if account:
+                join[(index, account['provider'])] = account
+    # Use one collection period for all accounts; do not mix lifetime attempts
+    # into provider totals when some credentials have no collector observations.
+    attributable_ids = {account['id'] for account in join.values()}
+    for account in accounts:
+        attributable = account['id'] in attributable_ids
+        account.update({'usageSource': 'collector', 'usageRequests': 0 if attributable else None,
+                        'usageFailed': 0 if attributable else None, 'usageRecords': 0,
+                        'usageFirstAt': None, 'usageLastAt': None, 'usagePartial': partial,
+                        'tokenMetrics': legacy_token_metrics([])})
+    unmatched = 0
+    for index, family, count, failed, first_at, last_at, metrics in rows:
+        account = join.get((index, family))
+        if account is None:
+            unmatched += count
+            continue
+        account.update({'usageRequests': count, 'usageFailed': failed, 'usageRecords': count,
+                        'usageFirstAt': first_at, 'usageLastAt': last_at, 'tokenMetrics': metrics})
+        # Latest activity may come from a newer server bucket than this collector.
+        if last_at and datetime.datetime.fromisoformat(last_at).timestamp() >= account['lastActivityRank']:
+            account.update({'lastRequestAt': last_at, 'lastActivityKind': 'exact',
+                            'lastActivityRank': datetime.datetime.fromisoformat(last_at).timestamp()})
+    return {'usageSource': 'collector', 'tokenUsageAvailable': True,
+            'usageSince': iso_timestamp(payload['startedAt']), 'usagePartial': partial,
+            'usageUnattributedRecords': unmatched, 'tokenSemantics': COLLECTOR_SEMANTICS,
+            'collectorNotice': 'Collector reports incomplete coverage. Totals may omit usage.' if partial else ''}
 
 
 def valid_auth_filename(value):

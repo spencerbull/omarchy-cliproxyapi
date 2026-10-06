@@ -13,6 +13,7 @@ FocusScope {
     property bool privateMode: false
     property bool connecting: false
     property bool filterOpen: false
+    property string activePane: "limits"
     property string selectedProvider: "all"
     property string expandedId: ""
     property double now: Date.now()
@@ -23,7 +24,7 @@ FocusScope {
     readonly property var providerOptions: Display.providers(accounts)
     readonly property var visibleAccounts: Display.filtered(accounts, selectedProvider, search.text, "provider", privateMode)
     readonly property int loadedCount: accounts.filter(account => service && service.quotas[account.id] && !service.quotas[account.id].error).length
-    readonly property real preferredHeight: setup ? Style.space(430) : Math.min(Style.space(560), Math.max(Style.space(190), accountList.implicitHeight + Style.space(filterOpen ? 143 : 106)))
+    readonly property real preferredHeight: setup ? Style.space(430) : Math.min(Style.space(560), Math.max(Style.space(190), (activePane === "usage" ? usagePane.implicitHeight : accountList.implicitHeight) + Style.space(filterOpen ? 181 : 144)))
 
     function submit() {
         if (service && service.connectTo(address.text.trim(), secret.text, remember.checked)) {
@@ -34,6 +35,7 @@ FocusScope {
     function resetScroll() { if (scroll.contentItem) scroll.contentItem.contentY = 0 }
     onPrivateModeChanged: if (privateMode) search.clear()
     onFilterOpenChanged: if (!filterOpen) { search.clear(); selectedProvider = "all" }
+    onActivePaneChanged: resetScroll()
     onSelectedProviderChanged: { expandedId = ""; resetScroll() }
     onSetupChanged: {
         resetScroll()
@@ -66,8 +68,8 @@ FocusScope {
             Layout.fillWidth: true; spacing: Style.space(6)
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Style.space(3)
-                Label { text: "Usage limits"; font.pixelSize: Style.font.title; font.bold: true }
-                Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.5) }
+                Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.title; font.bold: true }
+                Label { text: root.activePane === "usage" ? "Account activity" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.5) }
             }
             Item { Layout.fillWidth: true }
             Ui.PanelActionButton {
@@ -79,15 +81,20 @@ FocusScope {
                 visible: !root.setup; focusable: true; onClicked: root.privateMode = !root.privateMode
             }
             Ui.PanelActionButton {
-                iconText: "󰑐"; tooltipText: "Refresh all subscription limits"
+                iconText: "󰑐"; tooltipText: root.activePane === "usage" ? "Refresh usage" : "Refresh all subscription limits"
                 visible: !root.setup; enabled: root.service && !root.service.busy && !root.service.refreshingLimits; focusable: true
-                onClicked: root.service.refresh(true)
+                onClicked: root.service.refresh(root.activePane === "limits")
             }
             Ui.PanelActionButton {
                 iconText: root.settingsOpen && root.hasData ? "󰅖" : "󰒓"
-                tooltipText: root.settingsOpen ? "Back to limits" : "Connection settings"
+                tooltipText: root.settingsOpen ? "Back to dashboard" : "Connection settings"
                 visible: root.hasData; focusable: true; onClicked: root.settingsOpen = !root.settingsOpen
             }
+        }
+        Ui.ButtonGroup {
+            objectName: "paneTabs"; visible: !root.setup
+            options: [{value:"limits",label:"Limits"},{value:"usage",label:"Usage"}]
+            value: root.activePane; onChanged: value => root.activePane = value
         }
         Ui.PanelSeparator { Layout.fillWidth: true }
         Label {
@@ -108,7 +115,7 @@ FocusScope {
             }
         }
         RowLayout {
-            visible: !root.setup; Layout.fillWidth: true
+            visible: !root.setup && root.activePane === "limits"; Layout.fillWidth: true
             Label { text: root.accounts.length + " ACCOUNTS"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
             Item { Layout.fillWidth: true }
             Label { text: "LEFT     RESETS IN"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
@@ -121,7 +128,7 @@ FocusScope {
                 width: scroll.availableWidth; spacing: Style.space(8)
                 ColumnLayout {
                     id: accountList
-                    visible: !root.setup; Layout.fillWidth: true; spacing: Style.space(10)
+                    visible: !root.setup && root.activePane === "limits"; Layout.fillWidth: true; spacing: Style.space(10)
                     Repeater {
                         model: root.visibleAccounts
                         AccountRow {
@@ -142,6 +149,12 @@ FocusScope {
                         text: root.accounts.length ? "No subscriptions match this filter." : "No signed-in accounts were returned by the proxy."
                         color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap; topPadding: Style.space(10)
                     }
+                }
+                UsagePane {
+                    id: usagePane; objectName: "usagePane"
+                    visible: !root.setup && root.activePane === "usage"; Layout.fillWidth: true
+                    accounts: root.visibleAccounts; snapshotData: root.snapshotData
+                    privateMode: root.privateMode; now: root.now
                 }
                 ColumnLayout {
                     visible: root.setup; Layout.fillWidth: true; spacing: Style.space(12)
@@ -197,10 +210,10 @@ FocusScope {
             Label {
                 Layout.fillWidth: true
                 text: !root.service || !root.service.ready ? "Starting…" : root.service.refreshingLimits ? "Refreshing limits… " + root.loadedCount + "/" + root.accounts.length
-                    : root.service.busy ? "Updating accounts…" : root.setup ? "PRIVATE CONNECTION" : root.loadedCount + "/" + root.accounts.length + " limits loaded · auto-refresh 5m"
+                    : root.service.busy ? "Updating accounts…" : root.setup ? "PRIVATE CONNECTION" : root.activePane === "usage" ? "Updated " + Display.relative(root.snapshotData.updatedAt, root.now).toLowerCase() + " · auto-refresh 1m" : root.loadedCount + "/" + root.accounts.length + " limits loaded · auto-refresh 5m"
                 color: Qt.alpha(Color.foreground, 0.45); font.pixelSize: Style.font.caption
             }
-            Label { visible: !root.setup; text: "Click for activity"; color: Qt.alpha(Color.foreground, 0.4); font.pixelSize: Style.font.caption }
+            Label { visible: !root.setup; text: root.activePane === "usage" ? "Click provider for accounts" : "Click for activity"; color: Qt.alpha(Color.foreground, 0.4); font.pixelSize: Style.font.caption }
         }
     }
     component Label: Text {

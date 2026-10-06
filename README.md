@@ -1,6 +1,6 @@
 # CLIProxyAPI for Omarchy
 
-Remaining allowance across your AI subscriptions, directly in the Omarchy bar. All account limits appear immediately in a compact native panel, with provider logos, reset countdowns, and automatic refresh.
+Subscription limits and account usage, directly in the Omarchy bar. Switch between remaining allowance and provider/account token breakdowns in a compact native panel with provider logos and automatic refresh.
 
 ![Subscription limits with synthetic accounts](docs/overview.png)
 
@@ -42,6 +42,48 @@ Credits, renewal dates, and reset counts appear beneath the meters. Expand an ac
 
 ![Subscription detail with synthetic data](docs/limits.png)
 
+## Usage by provider and account
+
+The **Usage** tab groups signed-in accounts by provider. Select requests, total,
+input, output, cached, reasoning, cache-read, or cache-write tokens to compare providers with proportional
+bars. Expand a provider for each account's input, output, cached, reasoning,
+cache-read and cache-write metrics, failed attempts, and last activity. Search,
+provider filters and privacy mode apply to both panes. Filtering also scopes the
+totals and comparison bars.
+
+![Usage with a synthetic collector](docs/usage.png)
+
+![Account token breakdown with synthetic data](docs/usage-accounts.png)
+
+Counts use a single source period: persistent collected attempts when the companion
+is available, otherwise the server's request snapshot. Token fields show reported
+values independently; cache and reasoning may overlap input/output, so they are
+never added together. **`*` means partial coverage; `—` means not reported.**
+Hover a token metric for its exact count and record coverage. Activity strips still
+show recent server activity, which can cover a different period from token totals.
+
+### Token history on CLIProxyAPI v8
+
+Current v8 servers expose request counters but no built-in non-consuming token
+history API. The optional [server-side collector](collector/README.md) observes
+completed usage events, persists minimal aggregates, and exposes an authenticated
+read-only summary. It **does not consume `/usage-queue`** and uses the same URL
+and management key; the desktop detects its fixed endpoint automatically.
+
+The collector source, build instructions and configuration example are included.
+It must be built and enabled on the **proxy server** using that deployment's normal
+change procedure. Installing this desktop plugin does not change the server.
+Collection begins when enabled; earlier token history is not backfilled. Its
+lifetime totals survive restarts and are explicitly marked incomplete after
+unclean shutdowns or rejected records. SDK-normalized zero submetrics may mean
+an upstream field was omitted; all-zero token records stay unknown.
+
+Legacy servers with `/usage` work without the companion. Attribution uses only a
+unique account `auth_index`; unmatched records are excluded and counted. Legacy
+cache read/write cannot be reliably separated. Counts are tied to the server's
+credential identifiers; replacing credentials in a reused slot may retain that
+slot's historical usage.
+
 ### Muse permission
 
 Muse's upstream quota endpoint also **issues an API key**. It is never called automatically without permission. **Set up Muse limits** explains this behavior, then **Allow for this session** enables the lookup and periodic refresh for that account. The permission stays in memory and clears on reconnect, forgetting, or restarting the plugin.
@@ -52,7 +94,7 @@ The helper reads that account's DCA credential through management, keeps it requ
 
 The plugin displays what the provider exposes. Some xAI subscriptions do not expose billing limits through read-only endpoints; this is shown explicitly. It never issues inference probes to manufacture quota data. Unsupported providers remain visible with a reason.
 
-Modern activity counters represent upstream attempts, including retries. Recent activity is reported in ten-minute server-time windows and marked approximate. Exact last-request times, tokens, and models require legacy history uniquely attributed to the account's `auth_index`. Credential refresh or file modification dates are never substituted. Accounts are subscriptions or credentials, not individual running agent processes.
+Modern activity counters represent upstream attempts, including retries. Recent activity is reported in ten-minute server-time windows and marked approximate. Exact last-request times and tokens require the companion collector or uniquely attributed legacy history. Model history requires legacy data. Credential refresh or file modification dates are never substituted. Accounts are subscriptions or credentials, not individual running agent processes.
 
 The plugin **never consumes `/usage-queue`, claims reset grants, spends reset credits, changes routing, or sends inference requests**. Availability of a manual reset is information only; this plugin cannot spend it.
 
@@ -83,6 +125,6 @@ python3 scripts/preview.py
 
 The preview uses the actual helper/QML against a loopback-only synthetic API and an isolated configuration directory. Set `OMARCHY_PATH` if shell modules are not found. All preview credentials, quota responses, and account names are fictional, including Muse's key-issuing fixture.
 
-Tests cover quota parsing, consent gates, credential handling, fixed endpoint requests, account attribution, retries, cache freshness, and display semantics. Do not commit real account screenshots, server responses, credentials, or local configuration.
+Tests cover quota parsing, consent gates, credential handling, fixed endpoint requests, account attribution, collector parsing, partial coverage, provider aggregation, retries, cache freshness, and display semantics. The companion has separate concurrency, persistence, privacy and compiled ABI checks. Do not commit real account screenshots, server responses, credentials, or local configuration.
 
 [Provider artwork notices](THIRD_PARTY_NOTICES.md). MIT licensed. Independent community plugin; not affiliated with CLIProxyAPI, Omarchy, or the providers.

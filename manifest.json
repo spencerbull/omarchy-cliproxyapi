@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "spencerbull.cliproxyapi",
   "name": "CLIProxyAPI",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": "Spencer Bull",
   "license": "MIT",
-  "description": "Subscription limits, reset times, and account activity in a compact native panel.",
+  "description": "Subscription limits and provider/account token usage in a compact native panel.",
   "kinds": ["service", "bar-widget"],
   "entryPoints": {"service": "Service.qml", "barWidget": "Panel.qml"},
   "barWidget": {

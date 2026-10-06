@@ -61,6 +61,23 @@ def usage_fixture():
                               'models': {'synthetic-model': {'total_requests': len(rows), 'total_tokens': total, 'details': rows}}}}}}
 
 
+def collector_fixture():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = []
+    for index, family in enumerate(['codex', 'claude', 'codex', 'claude']):
+        factor = index + 1
+        rows.append({'authIndex': 'demo-account-' + str(index), 'provider': family,
+            'requests': 120 * factor, 'failed': index,
+            'firstRequestAt': (now - datetime.timedelta(days=3)).isoformat(),
+            'lastRequestAt': (now - datetime.timedelta(minutes=index * 5)).isoformat(),
+            'tokenMetrics': {'total': 1200000 * factor, 'input': 1000000 * factor,
+                'output': 200000 * factor, 'cached': 750000 * factor,
+                'reasoning': 80000 * factor, 'cacheRead': 700000 * factor, 'cacheWrite': 50000 * factor},
+            'metricSamples': dict.fromkeys(['total', 'input', 'output', 'cached', 'reasoning', 'cacheRead', 'cacheWrite'], 120 * factor - index)})
+    return {'schemaVersion': 1, 'source': 'omarchy-usage', 'partial': False, 'health': 'ok',
+            'startedAt': (now - datetime.timedelta(days=3)).isoformat(), 'accounts': rows}
+
+
 class DemoHandler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -91,6 +108,8 @@ class DemoHandler(BaseHTTPRequestHandler):
             self.reply(200, fixture())
         elif self.path == '/v0/management/usage' and self.server.usage_enabled:
             self.reply(200, usage_fixture())
+        elif self.path == '/v0/management/plugins/omarchy-usage/summary':
+            self.reply(200, collector_fixture()) if self.server.collector_enabled else self.reply(404, {})
         elif self.path == '/v0/management/api-key-usage':
             self.reply(200, {})
         else:
@@ -102,6 +121,10 @@ class DemoHandler(BaseHTTPRequestHandler):
         if self.path in ('/demo/usage/enable', '/demo/usage/disable'):
             self.server.usage_enabled = self.path.endswith('/enable')
             self.reply(200, {'usage_enabled': self.server.usage_enabled})
+            return
+        if self.path in ('/demo/collector/enable', '/demo/collector/disable'):
+            self.server.collector_enabled = self.path.endswith('/enable')
+            self.reply(200, {'collector_enabled': self.server.collector_enabled})
             return
         if self.path == '/demo/fail-next':
             self.server.fail_next = True
@@ -161,6 +184,7 @@ def create_server(usage_enabled=True):
     server.quota_calls = 0
     server.downloads = 0
     server.fail_next = False
+    server.collector_enabled = False
     server.usage_enabled = usage_enabled
     return server
 

@@ -155,4 +155,54 @@ function mergeQuota(previous, message) {
     return merged
 }
 
-if (typeof module !== "undefined") module.exports = {windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}
+
+// Token counters are independent reported values: cache/reasoning can overlap
+// input/output. Aggregate account observations, never client-key totals.
+var tokenKeys = ["total", "input", "output", "cached", "reasoning", "cacheRead", "cacheWrite"]
+function usageSummary(accounts) {
+    var result = {accounts: accounts, tokenMetrics: {}, usageRecords: 0}
+    accounts = accounts.map(function(a) { return a.usageSource === "collector" ? Object.assign({}, a, {requests: a.usageRequests, failed: a.usageFailed, metricsLabel: "Collected attempts"}) : a })
+    ;["requests", "failed"].forEach(function(key) {
+        var known = accounts.filter(function(a) { return typeof a[key] === "number" && isFinite(a[key]) })
+        result[key] = {value: known.length ? known.reduce(function(sum, a) { return sum + a[key] }, 0) : null,
+            partial: known.length > 0 && (known.length < accounts.length || accounts.some(function(a) { return a.usagePartial === true }))}
+    })
+    tokenKeys.forEach(function(key) {
+        var value = 0, reported = 0, records = 0, missing = 0, known = 0
+        accounts.forEach(function(a) {
+            var metric = (a.tokenMetrics || {})[key] || {}
+            records += Number(metric.records) || 0
+            if (typeof metric.value === "number" && isFinite(metric.value)) {
+                value += metric.value; reported += Number(metric.reported) || 0; known++
+            } else if (!(a.usageSource === "collector" && a.usageRequests === 0 && a.usageRecords === 0)) missing++
+        })
+        result.tokenMetrics[key] = {value: known ? value : null, reported: reported, records: records,
+            partial: known > 0 && (missing > 0 || reported < records || accounts.some(function(a) { return a.usagePartial === true }))}
+    })
+    accounts.forEach(function(a) { result.usageRecords += Number(a.usageRecords) || 0 })
+    var latest = accounts.slice().sort(function(a,b) { return (b.lastActivityRank || 0) - (a.lastActivityRank || 0) })[0] || {}
+    ;["lastActivityKind", "lastActivityLabel", "lastRequestAt", "lastActivityRank"].forEach(function(k) { result[k] = latest[k] })
+    var labels = accounts.map(function(a) { return a.metricsLabel || "Upstream attempts" })
+    result.metricsLabel = labels.length && labels.every(function(l) { return l === "Collected attempts" }) ? "Collected attempts" : labels.every(function(l) { return l === "Recorded requests" }) && labels.length ? "Recorded requests"
+        : labels.some(function(l) { return l === "Recorded requests" }) ? "Mixed request counters" : "Upstream attempts"
+    return result
+}
+function usageGroups(accounts) {
+    var grouped = {}
+    accounts.forEach(function(a) { if (!grouped[a.provider]) grouped[a.provider] = []; grouped[a.provider].push(a) })
+    return Object.keys(grouped).sort().map(function(provider) {
+        return Object.assign(usageSummary(grouped[provider]), {provider: provider})
+    })
+}
+function usageMetric(summary, key) { return key === "requests" ? summary.requests : summary.tokenMetrics[key] }
+function metricText(metric, exact) {
+    return (exact ? count(metric && metric.value) : compact(metric && metric.value)) + (metric && metric.partial ? "*" : "")
+}
+function usageMaximum(groups, key) {
+    return Math.max.apply(null, [0].concat(groups.map(function(g) { return usageMetric(g, key).value || 0 })))
+}
+function metricRatio(metric, maximum) {
+    return maximum > 0 && metric && metric.value !== null ? Math.max(0, Math.min(1, metric.value / maximum)) : 0
+}
+
+if (typeof module !== "undefined") module.exports = {usageSummary:usageSummary, usageGroups:usageGroups, usageMetric:usageMetric, metricText:metricText, usageMaximum:usageMaximum, metricRatio:metricRatio, windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}
