@@ -14,7 +14,7 @@ import ssl
 import stat
 import sys
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, quote
 
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_COMMAND = 65536
@@ -25,9 +25,11 @@ PROVIDERS = {'codex', 'claude', 'gemini', 'antigravity', 'openai', 'vertex', 'xa
 
 
 class SafeError(Exception):
-    def __init__(self, message, retryable=False):
+    def __init__(self, message, retryable=False, auth_failed=False):
         super().__init__(message)
         self.retryable = retryable
+        self.auth_failed = auth_failed
+        self.retry_after = None
 
 
 def normalize_url(value):
@@ -178,17 +180,64 @@ class Client:
     def quota(self, target):
         family = target['provider']
         urls = {'codex': 'https://chatgpt.com/backend-api/wham/usage',
-                'claude': 'https://api.anthropic.com/api/oauth/usage'}
+                'claude': 'https://api.anthropic.com/api/oauth/usage',
+                'xai': 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'}
         if family not in urls or not target.get('auth_index'):
             raise SafeError('Quota is unavailable for this account.')
         headers = {'Authorization': 'Bearer $TOKEN$', 'Content-Type': 'application/json',
                    'User-Agent': 'codex-cli/0.149.1' if family == 'codex' else 'claude-cli/2.1.280 (external, cli)'}
         if family == 'claude':
             headers['anthropic-beta'] = 'oauth-2025-04-20'
+        elif family == 'xai':
+            headers.update({'x-xai-token-auth': 'xai-grok-cli', 'x-grok-client-version': '0.2.91',
+                            'User-Agent': 'grok-pager/0.2.91 grok-shell/0.2.91'})
         elif target.get('account_id'):
             headers['Chatgpt-Account-Id'] = target['account_id']
         payload = {'auth_index': target['auth_index'], 'method': 'GET', 'url': urls[family], 'header': headers}
         return self._request('POST', '/api-call', payload=payload)
+
+    def quota_extra(self, target, resource):
+        family = target['provider']
+        urls = {
+            ('codex', 'subscription'): 'https://chatgpt.com/backend-api/subscriptions',
+            ('codex', 'reset-credits'): 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
+            ('xai', 'monthly'): 'https://cli-chat-proxy.grok.com/v1/billing',
+        }
+        url = urls.get((family, resource))
+        if not url or not target.get('auth_index'):
+            raise SafeError('This supplemental quota request is unsupported.')
+        headers = {'Authorization': 'Bearer $TOKEN$', 'Accept': 'application/json'}
+        if family == 'codex':
+            headers['User-Agent'] = 'codex-cli/0.149.1'
+            if target.get('account_id'):
+                headers['Chatgpt-Account-Id'] = target['account_id']
+            if resource == 'subscription':
+                if not target.get('account_id'):
+                    raise SafeError('Subscription renewal requires an account identifier.')
+                url += '?account_id=' + quote(target['account_id'], safe='')
+            else:
+                headers.update({'OpenAI-Beta': 'codex-1', 'Originator': 'Codex Desktop'})
+        else:
+            headers.update({'x-xai-token-auth': 'xai-grok-cli', 'x-grok-client-version': '0.2.91',
+                            'User-Agent': 'grok-pager/0.2.91 grok-shell/0.2.91'})
+        return self._request('POST', '/api-call', payload={
+            'auth_index': target['auth_index'], 'method': 'GET', 'url': url, 'header': headers})
+
+    def meta_quota(self, target, allow_key_issue=False):
+        # This route can mint a key. Consent is checked here as well as in Bridge.
+        if allow_key_issue is not True:
+            raise SafeError('Meta quota requires explicit consent because the provider may issue an API key.')
+        if target.get('provider') != 'meta' or not valid_auth_filename(target.get('filename')):
+            raise SafeError('Meta quota requires a supported account credential file.')
+        credential = self.get('/auth-files/download?name=' + quote(target['filename'], safe=''))
+        token = credential.get('dca_token')
+        if not isinstance(token, str) or not re.fullmatch(r'dca:[A-Za-z0-9._~+/=-]{1,8192}', token):
+            raise SafeError('This Meta account does not provide the required quota credential.')
+        return self._request('POST', '/api-call', payload={
+            'auth_index': target['auth_index'], 'method': 'POST',
+            'url': 'https://api.meta.ai/muse-code/key', 'data': '{}',
+            'header': {'Authorization': 'Bearer ' + token, 'Accept': 'application/json',
+                       'Content-Type': 'application/json', 'x-api-version': '1.0.0'}})
 
     def _request(self, method, endpoint, optional=False, payload=None):
         parts = urlsplit(self.url)
@@ -205,7 +254,7 @@ class Client:
                          'User-Agent': 'omarchy-cliproxyapi/1.0', 'Connection': 'close'})
             response = connection.getresponse()
             if response.status in (401, 403):
-                raise SafeError('Management access was rejected. Check the key and remote management setting.')
+                raise SafeError('Management access was rejected. Check the key and remote management setting.', auth_failed=True)
             if 300 <= response.status < 400:
                 raise SafeError('The server redirected the request. Enter its final HTTPS URL directly.')
             if response.status == 404 and optional:
@@ -426,7 +475,7 @@ def iso_timestamp(value, numeric=False):
 
 def plan_label(value):
     allowed = {'free', 'plus', 'pro', 'team', 'business', 'enterprise', 'edu', 'max', 'starter',
-               'ultra', 'basic', 'premium', 'individual', 'promax', 'self-serve-business-prolite'}
+               'ultra', 'basic', 'premium', 'individual', 'promax', 'self-serve-business-prolite', 'self_serve_business_prolite', 'prolite', 'pro-lite', 'pro_lite'}
     return value.lower() if isinstance(value, str) and value.lower() in allowed else None
 
 
@@ -522,19 +571,24 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
                 rank = window_rank
         label = account_label(raw.get('email'), 'Account ' + str(len(accounts) + 1), forbidden) if kind != 'api_key' else 'API key ' + str(len(accounts) + 1)
         plan = plan_label(mapping(raw.get('id_token')).get('plan_type')) or plan_label(raw.get('plan_type'))
-        supported = kind == 'oauth' and family in ('codex', 'claude') and unique
+        meta_eligible = family == 'meta' and valid_auth_filename(raw.get('name')) and raw.get('runtime_only') not in (True, 'true')
+        supported = kind == 'oauth' and unique and (family in ('codex', 'claude', 'xai') or meta_eligible)
+        quota_reason = None if supported else quota_unavailable_reason(family, kind, unique)
         accounts.append({'id': account_id, 'provider': family, 'label': label, 'kind': kind, 'plan': plan,
             'status': status, 'requests': requests, 'success': success, 'failed': failed,
             'tokens': tokens if token_known and not missing_tokens else None, 'lastRequestAt': last_request,
             'lastActivityLabel': last_window, 'lastActivityKind': activity, 'lastActivityRank': rank,
             'history': recent, 'models': sorted(models.values(), key=lambda model: -model['requests']),
             'nextRetryAt': iso_timestamp(raw.get('next_retry_after')), 'quotaSupported': supported,
+            'quotaConsentRequired': supported and family == 'meta', 'quotaReason': quota_reason,
             'metricsLabel': scope})
         if supported:
             upstream_id = identity(mapping(raw.get('id_token')).get('chatgpt_account_id'))
             if upstream_id and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', upstream_id):
                 upstream_id = None
-            targets[account_id] = {'provider': family, 'auth_index': index, 'account_id': upstream_id, 'plan': plan}
+            targets[account_id] = {'provider': family, 'auth_index': index, 'account_id': upstream_id, 'plan': plan,
+                'filename': raw.get('name') if meta_eligible else None,
+                'renewalAt': quota_instant(mapping(raw.get('id_token')).get('chatgpt_subscription_active_until'))}
     for group, key, raw in api_entries:
         recent = account_history(raw.get('recent_requests'))
         active = [(i, row) for i, row in enumerate(recent) if row['requests'] > 0]
@@ -546,18 +600,66 @@ def build_accounts(client, files, api_keys, usage, forbidden, observed_at=None):
             'lastActivityLabel': active[-1][1]['label'] if active else None,
             'lastActivityKind': 'window' if active else 'none', 'lastActivityRank': anchor - (len(recent) - 1 - active[-1][0]) * 600 if active else 0,
             'history': recent, 'models': [], 'nextRetryAt': None, 'quotaSupported': False,
+            'quotaConsentRequired': False, 'quotaReason': 'Subscription quota is unavailable for API-key connections.',
             'metricsLabel': 'Upstream attempts'})
     return accounts, targets
 
 
+def valid_auth_filename(value):
+    return isinstance(value, str) and bool(re.fullmatch(r'[A-Za-z0-9_.@+-]{1,255}', value)) and value not in ('.', '..')
+
+
+def quota_unavailable_reason(family, kind, unique):
+    if kind != 'oauth':
+        return 'Subscription quota requires an OAuth account.'
+    if not unique:
+        return 'This account has no unique quota identifier.'
+    if family == 'meta':
+        return 'Meta quota requires a stored account file and may issue an API key.'
+    if family in ('gemini', 'antigravity'):
+        return 'This provider does not expose a supported quota route through this connection.'
+    return 'No supported subscription quota route is available for this provider.'
+
+
+def numeric(value, maximum=2**53-1):
+    if isinstance(value, str) and len(value) <= 40 and re.fullmatch(r'\d+(?:\.\d+)?', value):
+        value = float(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= maximum:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def boolean(value):
+    return value if isinstance(value, bool) else None
+
+
+def first(row, *keys):
+    return next((row[key] for key in keys if row.get(key) is not None), None)
+
+
+def quota_instant(value):
+    parsed = numeric(value)
+    if parsed is not None:
+        # Quota APIs use both epoch seconds and epoch milliseconds.
+        return iso_timestamp(parsed / 1000 if parsed >= 100000000000 else parsed, numeric=True)
+    return iso_timestamp(value)
+
+
 def valid_percent(value):
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and 0 <= value <= 100 and math.isfinite(value))
+    return numeric(value, 100) is not None
 
 
-def quota_windows(envelope, family):
+def quota_body(envelope):
     if envelope.get('status_code') != 200:
-        raise SafeError('The provider could not return quota for this account.')
+        error = SafeError('The provider could not return quota for this account.')
+        if envelope.get('status_code') == 429:
+            error = SafeError('The provider rate limited quota checks. Try again later.')
+            headers = mapping(envelope.get('header'))
+            for key, value in headers.items():
+                if isinstance(key, str) and key.lower() == 'retry-after':
+                    raw = value[0] if isinstance(value, list) and value else value
+                    error.retry_after = numeric(raw, 86400)
+        raise error
     payload = envelope.get('body')
     if isinstance(payload, str):
         try:
@@ -566,51 +668,259 @@ def quota_windows(envelope, family):
             raise SafeError('The provider returned an unsupported quota response.') from None
     if not isinstance(payload, dict):
         raise SafeError('The provider returned an unsupported quota response.')
-    candidates = []
+    return payload
+
+
+def safe_feature(value, fallback):
+    if not isinstance(value, str) or len(value) > 80:
+        return fallback
+    text = value.strip()
+    # Accept recognizable product/model names, never arbitrary error/identity text.
+    if re.fullmatch(r'(?i)(?:gpt|codex|claude|opus|sonnet|haiku|fable|spark|sora|grok|code review|image|deep research)(?:[ ._-][A-Za-z0-9 ._-]{0,65})?', text):
+        return text
+    return fallback
+
+
+def window_label(seconds, fallback):
+    if seconds == 18000:
+        return '5 hours'
+    if seconds == 604800:
+        return 'Weekly'
+    if seconds is not None and 28*86400 <= seconds <= 31*86400:
+        return 'Monthly'
+    if seconds and seconds % 3600 == 0:
+        return str(int(seconds / 3600)) + ' hours'
+    return fallback
+
+
+def normalized_window(identifier, label, group, percent, reset, period=None, allowed=None, reached=None, active=None):
+    return {'id': identifier, 'label': label, 'group': group,
+            'usedPercent': numeric(percent, 100), 'resetAt': reset, 'periodSeconds': period,
+            'allowed': boolean(allowed), 'limitReached': boolean(reached), 'isActive': boolean(active)}
+
+
+def parse_reset_credits(payload):
+    if not isinstance(payload, dict) or not any(key in payload for key in ('credits', 'available_count', 'availableCount', 'applicable_available_count', 'applicableAvailableCount')):
+        raise SafeError('Manual reset availability is unavailable.')
+    credits = []
+    raw_credits = payload.get('credits')
+    for raw in raw_credits if isinstance(raw_credits, list) else []:
+        row = mapping(raw)
+        if first(row, 'reset_type', 'resetType') != 'codex_rate_limits' or row.get('status') != 'available':
+            continue
+        expiry = quota_instant(first(row, 'expires_at', 'expiresAt'))
+        if not expiry:
+            continue
+        credits.append({'expiresAt': expiry, 'applicable': boolean(first(row, 'is_applicable', 'isApplicable', 'applicable'))})
+    available = numeric(first(payload, 'available_count', 'availableCount'))
+    if available is None and isinstance(raw_credits, list):
+        available = len(credits)
+    return {'available': available,
+            'applicable': numeric(first(payload, 'applicable_available_count', 'applicableAvailableCount')),
+            'entries': sorted(credits, key=lambda row: row['expiresAt'])}
+
+
+def quota_data(envelope, family):
+    payload = quota_body(envelope)
+    windows, notices = [], []
+    result = {'windows': windows, 'plan': plan_label(first(payload, 'plan_type', 'planType')),
+              'renewalAt': None, 'credits': None, 'resetCredits': [], 'extraUsage': None, 'notices': notices}
     if family == 'codex':
-        for group, prefix in [('rate_limit', ''), ('code_review_rate_limit', 'Code review · ')]:
-            info = mapping(payload.get(group))
-            for key in ('primary_window', 'secondary_window'):
-                row = mapping(info.get(key))
-                duration = counter(row.get('limit_window_seconds'))
-                label = {18000: '5 hours', 604800: 'Weekly'}.get(duration,
-                        'Primary' if key == 'primary_window' else 'Secondary')
-                reset = iso_timestamp(row.get('reset_at'), numeric=True)
-                delay = counter(row.get('reset_after_seconds'))
-                if reset is None and delay is not None and delay <= 366 * 86400:
+        groups = [('main', 'Subscription', mapping(first(payload, 'rate_limit', 'rateLimit'))),
+                  ('review', 'Code review', mapping(first(payload, 'code_review_rate_limit', 'codeReviewRateLimit')))]
+        additional = first(payload, 'additional_rate_limits', 'additionalRateLimits')
+        for index, raw in enumerate(additional if isinstance(additional, list) else []):
+            row = mapping(raw)
+            label = safe_feature(first(row, 'limit_name', 'limitName', 'metered_feature', 'meteredFeature'), 'Additional limit ' + str(index+1))
+            groups.append(('additional-' + str(index), label, mapping(first(row, 'rate_limit', 'rateLimit'))))
+        for group_id, group_label, info in groups:
+            for key, camel, fallback in [('primary_window', 'primaryWindow', 'Primary'), ('secondary_window', 'secondaryWindow', 'Secondary')]:
+                raw = first(info, key, camel)
+                if not isinstance(raw, dict):
+                    continue
+                period = numeric(first(raw, 'limit_window_seconds', 'limitWindowSeconds'), 366*86400)
+                reset = quota_instant(first(raw, 'reset_at', 'resetAt'))
+                delay = numeric(first(raw, 'reset_after_seconds', 'resetAfterSeconds'), 366*86400)
+                if reset is None and delay is not None:
                     reset = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=delay)).isoformat()
-                candidates.append((prefix + label, row.get('used_percent'), reset))
-    else:
-        for key, label in [('five_hour', '5 hours'), ('seven_day', 'Weekly'),
-                           ('seven_day_opus', 'Opus weekly'), ('seven_day_sonnet', 'Sonnet weekly'),
-                           ('seven_day_oauth_apps', 'OAuth apps weekly'), ('seven_day_cowork', 'Cowork weekly')]:
-            row = mapping(payload.get(key))
-            candidates.append((label, row.get('utilization'), iso_timestamp(row.get('resets_at'))))
-        # Fable 5 uses the provider's newer scoped limits array. Do not expose
-        # arbitrary model/scope names, or confuse other weekly limits with it.
+                percent = first(raw, 'used_percent', 'usedPercent')
+                allowed = boolean(info.get('allowed'))
+                reached = boolean(first(info, 'limit_reached', 'limitReached'))
+                if numeric(percent, 100) is None and reset is None and allowed is None and reached is None:
+                    continue
+                label = window_label(period, fallback)
+                if group_id != 'main':
+                    label = group_label + ' · ' + label
+                windows.append(normalized_window(group_id + '-' + key, label, group_label, percent, reset, period, allowed, reached))
+        credit = mapping(payload.get('credits'))
+        if credit:
+            result['credits'] = {'balance': numeric(credit.get('balance')), 'unlimited': boolean(credit.get('unlimited')),
+                                 'hasCredits': boolean(first(credit, 'has_credits', 'hasCredits')),
+                                 'resetCreditsAvailable': None, 'resetCreditsApplicable': None}
+        resets = first(payload, 'rate_limit_reset_credits', 'rateLimitResetCredits')
+        if isinstance(resets, dict):
+            try:
+                apply_reset_credits(result, parse_reset_credits(resets))
+            except SafeError:
+                notices.append('Manual reset availability is unavailable.')
+    elif family == 'claude':
+        named = [('five_hour', '5 hours', 18000), ('seven_day', 'Weekly', 604800),
+                 ('seven_day_opus', 'Opus weekly', 604800), ('seven_day_sonnet', 'Sonnet weekly', 604800),
+                 ('seven_day_oauth_apps', 'OAuth apps weekly', 604800), ('seven_day_cowork', 'Cowork weekly', 604800)]
+        known = {row[0] for row in named}
+        for key in payload:
+            if key not in known and isinstance(key, str) and re.fullmatch(r'seven_day_[a-z0-9_]{1,40}', key):
+                suffix = key[len('seven_day_'):].replace('_', ' ')
+                label = safe_feature(suffix, 'Additional') + ' weekly'
+                named.append((key, label, 604800))
+        for key, label, period in named:
+            raw = payload.get(key)
+            if not isinstance(raw, dict):
+                continue
+            percent, reset = raw.get('utilization'), quota_instant(raw.get('resets_at'))
+            if numeric(percent, 100) is not None or reset:
+                windows.append(normalized_window(key, label, 'Subscription', percent, reset, period))
+        scoped = {}
         limits = payload.get('limits')
-        fable = []
-        for raw in limits if isinstance(limits, list) else []:
+        for index, raw in enumerate(limits if isinstance(limits, list) else []):
             row = mapping(raw)
             kind = row.get('kind')
-            name = mapping(mapping(row.get('scope')).get('model')).get('display_name')
-            if (isinstance(kind, str) and kind.strip().lower() == 'weekly_scoped'
-                    and isinstance(name, str) and name.strip().lower().replace(' ', '') in ('fable', 'fable5')
-                    and valid_percent(row.get('percent'))):
-                fable.append(row)
-        if fable:
-            chosen = next((row for row in fable if row.get('is_active') is True), fable[0])
-            candidates.append(('Fable 5 weekly', chosen['percent'], iso_timestamp(chosen.get('resets_at'))))
-        else:
-            old_fable = mapping(payload.get('iguana_necktie'))
-            candidates.append(('Fable 5 weekly', old_fable.get('utilization'), iso_timestamp(old_fable.get('resets_at'))))
-    windows = []
-    for label, percent, reset in candidates:
-        if valid_percent(percent):
-            windows.append({'label': label, 'usedPercent': percent, 'resetAt': reset})
-    if not windows:
+            periods = {'hourly_scoped': 3600, 'five_hour_scoped': 18000, 'daily_scoped': 86400,
+                       'weekly_scoped': 604800, 'monthly_scoped': 30*86400}
+            if not isinstance(kind, str) or kind not in periods:
+                continue
+            percent, reset = row.get('percent'), quota_instant(row.get('resets_at'))
+            if numeric(percent, 100) is None and reset is None:
+                continue
+            model = mapping(mapping(row.get('scope')).get('model'))
+            raw_name = first(model, 'display_name', 'id')
+            normal = raw_name.strip().lower().replace(' ', '') if isinstance(raw_name, str) else ''
+            name = 'Fable 5' if normal in ('fable', 'fable5') else safe_feature(raw_name, 'Scoped limit ' + str(index+1))
+            group = identity(row.get('group')) or ''
+            identity_key = (name, kind, group)
+            # Provider may send superseded and active observations for one scope.
+            if identity_key not in scoped or (row.get('is_active') is True and scoped[identity_key][1].get('is_active') is not True):
+                scoped[identity_key] = (index, row, name, periods[kind])
+        has_fable = False
+        for index, row, name, period in scoped.values():
+            has_fable = has_fable or (name == 'Fable 5' and period == 604800)
+            suffix = {3600: 'hourly', 18000: '5 hours', 86400: 'daily', 604800: 'weekly', 30*86400: 'monthly'}[period]
+            windows.append(normalized_window('scoped-' + str(index), name + ' ' + suffix, 'Model limits', row.get('percent'),
+                quota_instant(row.get('resets_at')), period, active=row.get('is_active')))
+        if not has_fable and isinstance(payload.get('iguana_necktie'), dict):
+            row = payload['iguana_necktie']
+            percent, reset = row.get('utilization'), quota_instant(row.get('resets_at'))
+            if numeric(percent, 100) is not None or reset:
+                windows.append(normalized_window('fable-legacy', 'Fable 5 weekly', 'Model limits', percent, reset, 604800))
+        extra = payload.get('extra_usage')
+        if isinstance(extra, dict):
+            result['extraUsage'] = {'enabled': boolean(extra.get('is_enabled')),
+                'monthlyLimit': numeric(extra.get('monthly_limit')), 'usedCredits': numeric(extra.get('used_credits')),
+                'usedPercent': numeric(extra.get('utilization'), 100), 'unit': 'USD cents'}
+    elif family == 'xai':
+        config = payload.get('config')
+        if not isinstance(config, dict):
+            raise SafeError('xAI did not return subscription billing limits for this account.')
+        current = mapping(first(config, 'currentPeriod', 'current_period'))
+        weekly = current.get('type') == 'USAGE_PERIOD_TYPE_WEEKLY'
+        percent = first(config, 'creditUsagePercent', 'credit_usage_percent')
+        reset = quota_instant(current.get('end')) or quota_instant(first(config, 'billingPeriodEnd', 'billing_period_end'))
+        if weekly or numeric(percent, 100) is not None:
+            windows.append(normalized_window('xai-weekly', 'Weekly credits', 'Subscription', percent, reset, 604800))
+        products = first(config, 'productUsage', 'product_usage')
+        for index, raw in enumerate(products if isinstance(products, list) else []):
+            row = mapping(raw)
+            label = safe_feature(row.get('product'), 'Product ' + str(index+1))
+            percent = first(row, 'usagePercent', 'usage_percent')
+            if numeric(percent, 100) is not None:
+                windows.append(normalized_window('xai-product-' + str(index), label, 'Product limits', percent, reset, 604800 if weekly else None))
+        def cents(*keys):
+            raw = first(config, *keys)
+            return numeric(raw.get('val')) if isinstance(raw, dict) else numeric(raw)
+        limit, used = cents('monthlyLimit', 'monthly_limit'), cents('used')
+        if limit is not None or used is not None:
+            monthly_percent = min(100, used / limit * 100) if limit and used is not None else None
+            windows.append(normalized_window('xai-monthly', 'Monthly spending', 'Billing', monthly_percent,
+                quota_instant(first(config, 'billingPeriodEnd', 'billing_period_end'))))
+        result['extraUsage'] = {'enabled': None, 'monthlyLimit': limit, 'usedCredits': used,
+            'usedPercent': min(100, used/limit*100) if limit and used is not None else None, 'unit': 'USD cents',
+            'onDemandLimit': cents('onDemandCap', 'on_demand_cap'), 'onDemandUsed': cents('onDemandUsed', 'on_demand_used'),
+            'prepaidBalance': cents('prepaidBalance', 'prepaid_balance')}
+        if not windows and all(value is None for key, value in result['extraUsage'].items() if key != 'unit'):
+            raise SafeError('xAI did not expose quota through its read-only billing endpoints. No inference probe was performed.')
+        if any(window['usedPercent'] is None for window in windows):
+            notices.append('xAI omitted usage percentages for some billing periods; unavailable usage is not zero.')
+    elif family == 'meta':
+        usage = mapping(payload.get('subs_usage'))
+        result['plan'] = plan_label(payload.get('subs_tier_name')) or plan_label(usage.get('tier'))
+        result['subscriptionActive'] = boolean(payload.get('is_subs_active'))
+        for key, label, period in [('window', 'Current window', None), ('weekly', 'Weekly', 604800)]:
+            row = mapping(usage.get(key))
+            minutes = numeric(row.get('window_duration_mins'), 366*1440)
+            if minutes is not None:
+                period = minutes * 60
+                label = window_label(period, label)
+            windows.append(normalized_window('meta-' + key, label, 'Subscription', row.get('used_percent'),
+                quota_instant(row.get('resets_at')), period))
+        notices.append('Meta quota was read through a provider endpoint that may issue an API key.')
+    else:
+        raise SafeError('Quota is unavailable for this provider.')
+    if len(windows) > 64:
+        notices.append('The provider returned more than 64 windows; additional windows were omitted.')
+        result['windows'] = windows[:64]
+    if not windows and result['credits'] is None and result['extraUsage'] is None:
         raise SafeError('This provider response does not include supported quota windows.')
-    return windows[:8], plan_label(payload.get('plan_type'))
+    return result
+
+
+def apply_reset_credits(result, reset):
+    if result['credits'] is None:
+        result['credits'] = {'balance': None, 'unlimited': None, 'hasCredits': None,
+                             'resetCreditsAvailable': None, 'resetCreditsApplicable': None}
+    result['credits']['resetCreditsAvailable'] = reset['available']
+    result['credits']['resetCreditsApplicable'] = reset['applicable']
+    result['resetCredits'] = reset['entries']
+
+
+def quota_windows(envelope, family):
+    result = quota_data(envelope, family)
+    return result['windows'], result['plan']
+
+
+def fetch_xai_billing(client, target):
+    observations, notices = [], []
+    retry_after = None
+    for resource in ('weekly', 'monthly'):
+        try:
+            envelope = client.quota(target) if resource == 'weekly' else client.quota_extra(target, 'monthly')
+            observations.append(quota_data(envelope, 'xai'))
+        except SafeError as error:
+            if error.auth_failed:
+                raise
+            retry_after = max(retry_after or 0, error.retry_after or 0) or None
+            notices.append('xAI ' + resource + ' billing limits are unavailable.')
+        except Exception:
+            notices.append('xAI ' + resource + ' billing limits are unavailable.')
+    if not observations:
+        error = SafeError('xAI did not expose limits through its read-only billing endpoints. No inference probe was performed.')
+        error.retry_after = retry_after
+        raise error
+    result = observations[0]
+    for additional in observations[1:]:
+        existing = {row['id']: row for row in result['windows']}
+        for row in additional['windows']:
+            if row['id'] not in existing:
+                result['windows'].append(row)
+            elif existing[row['id']]['usedPercent'] is None and row['usedPercent'] is not None:
+                result['windows'][result['windows'].index(existing[row['id']])] = row
+        extra = additional['extraUsage']
+        if extra and any(value is not None for key,value in extra.items() if key not in ('enabled','unit')):
+            result['extraUsage'] = extra
+        result['notices'].extend(additional['notices'])
+    result['notices'] = list(dict.fromkeys(result['notices'] + notices))
+    if retry_after is not None:
+        result['retryAfter'] = retry_after
+    return result
 
 
 class Bridge:
@@ -656,7 +966,7 @@ class Bridge:
                 self.targets = targets
                 return result
             if op == 'quota':
-                return self.fetch_quota(command.get('id'))
+                return self.fetch_quota(command.get('id'), command.get('allowKeyIssue') is True)
             if op != 'refresh':
                 raise SafeError('Unknown command.')
             if self.session is None:
@@ -674,21 +984,62 @@ class Bridge:
                     'configured': self.session is not None, 'retryable': False}
 
 
-    def fetch_quota(self, account_id):
-        # Do not echo arbitrary input (including accidentally pasted keys).
+    def fetch_quota(self, account_id, allow_key_issue=False):
         valid_id = account_id if isinstance(account_id, str) and account_id in self.targets else ''
         target = self.targets.get(valid_id)
         result = {'type': 'quota', 'accountId': valid_id, 'windows': [], 'plan': target.get('plan') if target else None,
-                  'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+                  'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                  'renewalAt': target.get('renewalAt') if target else None, 'credits': None,
+                  'resetCredits': [], 'extraUsage': None, 'notices': []}
         try:
             if target is None or self.session is None:
                 raise SafeError('Refresh accounts before requesting quota for a supported account.')
+            if target['provider'] == 'meta' and allow_key_issue is not True:
+                result['consentRequired'] = True
+                raise SafeError('Meta quota requires explicit consent because the provider may issue an API key.')
             client = self.client_factory(self.session['url'], self.session['key'])
-            windows, plan = quota_windows(client.quota(target), target['provider'])
-            result['windows'] = windows
-            result['plan'] = plan or result['plan']
+            family = target['provider']
+            if family == 'xai':
+                result.update(fetch_xai_billing(client, target))
+            else:
+                envelope = client.meta_quota(target, allow_key_issue=True) if family == 'meta' else client.quota(target)
+                result.update(quota_data(envelope, family))
+            result['plan'] = result['plan'] or target.get('plan')
+            result['renewalAt'] = result['renewalAt'] or target.get('renewalAt')
+            if family == 'codex':
+                if target.get('account_id'):
+                    try:
+                        subscription = quota_body(client.quota_extra(target, 'subscription'))
+                        result['renewalAt'] = quota_instant(first(subscription, 'active_until', 'activeUntil')) or result['renewalAt']
+                        if result['renewalAt'] is None:
+                            result['notices'].append('Subscription renewal time is unavailable.')
+                    except SafeError as error:
+                        if error.auth_failed:
+                            raise
+                        if error.retry_after is not None:
+                            result['retryAfter'] = max(result.get('retryAfter', 0), error.retry_after)
+                        result['notices'].append('Subscription renewal time is unavailable.')
+                    except Exception:
+                        result['notices'].append('Subscription renewal time is unavailable.')
+                else:
+                    result['notices'].append('Live subscription renewal requires an account identifier.')
+                try:
+                    apply_reset_credits(result, parse_reset_credits(quota_body(client.quota_extra(target, 'reset-credits'))))
+                except SafeError as error:
+                    if error.auth_failed:
+                        raise
+                    if error.retry_after is not None:
+                        result['retryAfter'] = max(result.get('retryAfter', 0), error.retry_after)
+                    result['notices'].append('Manual reset availability is unavailable.')
+                except Exception:
+                    result['notices'].append('Manual reset availability is unavailable.')
+
         except SafeError as error:
             result['error'] = str(error)
+            if error.auth_failed:
+                result['authFailed'] = True
+            if error.retry_after is not None:
+                result['retryAfter'] = max(result.get('retryAfter', 0), error.retry_after)
         except Exception:
             result['error'] = 'The quota request could not be processed safely.'
         return result

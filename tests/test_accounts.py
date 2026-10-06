@@ -132,8 +132,9 @@ class AccountTests(unittest.TestCase):
         result, targets = snapshot(files)
         self.assertEqual([row['provider'] for row in result['accounts']], ['meta', 'xai'])
         self.assertEqual([row['plan'] for row in result['accounts']], ['promax', 'self-serve-business-prolite'])
-        self.assertTrue(all(not row['quotaSupported'] for row in result['accounts']))
-        self.assertEqual(targets, {})
+        self.assertFalse(result['accounts'][0]['quotaSupported'])
+        self.assertTrue(result['accounts'][1]['quotaSupported'])
+        self.assertEqual(len(targets), 1)
 
     def test_missing_detail_tokens_not_reported_as_partial_total(self):
         rows = [detail('one', '2026-10-06T00:00:00Z'), detail('one', '2026-10-06T00:01:00Z', tokens=None)]
@@ -225,7 +226,9 @@ class QuotaTests(unittest.TestCase):
             {'kind': 'weekly_scoped', 'scope': {'model': {'display_name': 'PRIVATE-MODEL'}}, 'percent': 51,
              'is_active': True}], 'iguana_necktie': {'utilization': 99}}
         windows, _ = backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')
-        self.assertEqual(windows, [{'label': 'Fable 5 weekly', 'usedPercent': 23, 'resetAt': '2026-10-10T00:00:00+00:00'}])
+        self.assertEqual({key: windows[0][key] for key in ('label', 'usedPercent', 'resetAt')},
+                         {'label': 'Fable 5 weekly', 'usedPercent': 23, 'resetAt': '2026-10-10T00:00:00+00:00'})
+        self.assertEqual(windows[1]['label'], 'Scoped limit 3 weekly')
         self.assertNotIn('PRIVATE', json.dumps(windows))
 
     def test_fable_legacy_fallback_and_malformed_scoped_limits(self):
@@ -234,10 +237,10 @@ class QuotaTests(unittest.TestCase):
                               {'kind': 'daily_scoped', 'scope': {'model': {'display_name': 'fable'}}, 'percent': 50}],
                    'iguana_necktie': {'utilization': 7, 'resets_at': '2026-10-10T00:00:00Z'}}
         windows, _ = backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')
-        self.assertEqual(windows[0]['usedPercent'], 7)
-        self.assertEqual(windows[0]['label'], 'Fable 5 weekly')
+        self.assertEqual(windows[-1]['usedPercent'], 7)
+        self.assertEqual(windows[-1]['label'], 'Fable 5 weekly')
         payload['limits'] = 'invalid'
-        self.assertEqual(backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')[0], windows)
+        self.assertEqual(backend.quota_windows({'status_code': 200, 'body': payload}, 'claude')[0], [windows[-1]])
 
     def test_explicit_protocol_success_and_isolated_failures(self):
         class QuotaClient(FakeClient):
