@@ -2,6 +2,10 @@
 
 A native Omarchy bar plugin for your AI proxy. See request volume, token and model usage, and the provider connections behind your agents without leaving the desktop.
 
+![CLIProxyAPI dashboard with synthetic demonstration data](docs/overview.png)
+
+*Native QML preview with synthetic data; colors follow your Omarchy theme.*
+
 ## Install
 
 Requires an Omarchy release with the Quickshell plugin system and Python 3. No Python packages, build step, or browser dashboard are required.
@@ -37,7 +41,7 @@ Newer versions removed that snapshot API. The plugin uses the read-only `auth-fi
 
 Client groups correspond to API keys, not running agent processes. To distinguish agent traffic on a server with legacy usage statistics, give each agent a separate client API key. Shared keys cannot identify individual agents. Connection labels are anonymous and may change when the server's inventory changes.
 
-**The plugin never polls `/usage-queue`.** That endpoint consumes records and could interfere with another collector. It does not fetch provider credentials, change routing, create API keys, or start agent sessions.
+**The plugin never polls `/usage-queue`.** That endpoint consumes records and could interfere with another collector. It does not download credential files, expose provider credentials, change routing, create API keys, or start agent sessions. Some upstream summary responses contain secrets; Python discards them before sending data to the dashboard.
 
 ## Credentials and privacy
 

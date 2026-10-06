@@ -156,6 +156,7 @@ FocusScope {
                     Label { text: "SERVER URL"; color: root.muted; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
                     Ui.TextField {
                         id: address
+                        objectName: "serverUrl"
                         Layout.fillWidth: true
                         placeholderText: "https://proxy.example.com"
                         selectByMouse: true
@@ -166,6 +167,7 @@ FocusScope {
                     Label { text: "MANAGEMENT KEY"; color: root.muted; font.pixelSize: Style.font.caption; font.letterSpacing: 1 }
                     Ui.TextField {
                         id: secret
+                        objectName: "managementKey"
                         Layout.fillWidth: true
                         placeholderText: "Enter management key"
                         password: true
@@ -357,7 +359,7 @@ FocusScope {
             Layout.fillWidth: true
             Label {
                 Layout.fillWidth: true
-                text: root.hasData ? root.snapshotData.url : "No credentials in shell settings or Git"
+                text: root.hasData ? (root.snapshotData.url || "") : "No credentials in shell settings or Git"
                 color: root.muted; elide: Text.ElideMiddle
                 font.pixelSize: Style.font.caption
             }
