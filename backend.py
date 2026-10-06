@@ -202,6 +202,8 @@ class Client:
             ('codex', 'subscription'): 'https://chatgpt.com/backend-api/subscriptions',
             ('codex', 'reset-credits'): 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
             ('xai', 'monthly'): 'https://cli-chat-proxy.grok.com/v1/billing',
+            ('claude', 'reset-grants'): 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1',
+            ('claude', 'profile'): 'https://api.anthropic.com/api/oauth/profile',
         }
         url = urls.get((family, resource))
         if not url or not target.get('auth_index'):
@@ -217,6 +219,9 @@ class Client:
                 url += '?account_id=' + quote(target['account_id'], safe='')
             else:
                 headers.update({'OpenAI-Beta': 'codex-1', 'Originator': 'Codex Desktop'})
+        elif family == 'claude':
+            headers.update({'anthropic-beta': 'oauth-2025-04-20', 'Content-Type': 'application/json',
+                            'User-Agent': 'claude-cli/2.1.280 (external, cli)'})
         else:
             headers.update({'x-xai-token-auth': 'xai-grok-cli', 'x-grok-client-version': '0.2.91',
                             'User-Agent': 'grok-pager/0.2.91 grok-shell/0.2.91'})
@@ -720,6 +725,84 @@ def parse_reset_credits(payload):
             'entries': sorted(credits, key=lambda row: row['expiresAt'])}
 
 
+def claude_profile_plan(payload):
+    organization = mapping(payload.get('organization'))
+    if organization.get('organization_type') == 'claude_team' and organization.get('subscription_status') == 'active':
+        return 'team'
+    def flag(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value) if math.isfinite(value) else None
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in ('true', '1', 'yes', 'y', 'on'):
+                return True
+            if text in ('false', '0', 'no', 'n', 'off'):
+                return False
+        return None
+    account = mapping(payload.get('account'))
+    maximum, pro = flag(account.get('has_claude_max')), flag(account.get('has_claude_pro'))
+    if maximum:
+        return 'max'
+    if pro:
+        return 'pro'
+    return 'free' if maximum is False and pro is False else None
+
+
+def parse_claude_reset_grants(payload, now=None):
+    block = payload.get('cedar_ember')
+    if not isinstance(block, dict) or not isinstance(block.get('eligible'), bool):
+        raise SafeError('Claude manual reset availability is unavailable.')
+    grants = block.get('grants', [])
+    if not isinstance(grants, list):
+        raise SafeError('Claude manual reset availability is unavailable.')
+    now = time.time() if now is None else now
+    def timestamp(row, key):
+        raw = row.get(key)
+        if raw is None:
+            return None
+        parsed = iso_timestamp(raw)
+        if parsed is None:
+            raise SafeError('Claude manual reset availability is unavailable.')
+        return parsed
+    def flag(row, key, default):
+        raw = row.get(key)
+        if raw is None:
+            return default
+        if not isinstance(raw, bool):
+            raise SafeError('Claude manual reset availability is unavailable.')
+        return raw
+    def epoch(value):
+        return datetime.datetime.fromisoformat(value).timestamp() if value else None
+    cooldown = epoch(timestamp(block, 'cooldown_until'))
+    timestamp(block, 'weekly_resets_at')
+    at_limit = flag(block, 'at_limit', False)
+    available, applicable, entries, seen = 0, 0, [], set()
+    for raw in grants:
+        row = mapping(raw)
+        identifier, total, left = row.get('id'), row.get('resets_total'), row.get('resets_left')
+        if (not isinstance(identifier, str) or not re.fullmatch(r'[a-z0-9_-]{1,40}', identifier)
+                or identifier in seen or type(total) is not int or type(left) is not int
+                or not 0 <= left <= total <= 2**53-1):
+            raise SafeError('Claude manual reset availability is unavailable.')
+        seen.add(identifier)
+        if row.get('clears') is not None and not isinstance(row['clears'], list):
+            raise SafeError('Claude manual reset availability is unavailable.')
+        start, end = timestamp(row, 'starts_at'), timestamp(row, 'ends_at')
+        paused, usable = flag(row, 'paused', False), flag(row, 'usable_now', False)
+        requires_limit = flag(row, 'use_requires_limit', True)
+        can_apply = (block['eligible'] and left > 0 and not paused and usable
+                     and (not requires_limit or at_limit) and (cooldown is None or cooldown <= now)
+                     and (start is None or epoch(start) <= now) and (end is None or epoch(end) > now))
+        available += left
+        applicable += left if can_apply else 0
+        if left > 0 and end:
+            entries.append({'expiresAt': end, 'applicable': bool(can_apply)})
+    return {'available': available, 'applicable': applicable,
+            'entries': sorted(entries, key=lambda row: row['expiresAt'])}
+
+
 def quota_data(envelope, family):
     payload = quota_body(envelope)
     windows, notices = [], []
@@ -1033,6 +1116,28 @@ class Bridge:
                     result['notices'].append('Manual reset availability is unavailable.')
                 except Exception:
                     result['notices'].append('Manual reset availability is unavailable.')
+
+            elif family == 'claude':
+                for resource, notice in [('profile', 'Claude subscription plan is unavailable.'),
+                                         ('reset-grants', 'Claude manual reset availability is unavailable.')]:
+                    try:
+                        payload = quota_body(client.quota_extra(target, resource))
+                        if resource == 'profile':
+                            plan = claude_profile_plan(payload)
+                            if plan:
+                                result['plan'] = plan
+                            else:
+                                result['notices'].append(notice)
+                        else:
+                            apply_reset_credits(result, parse_claude_reset_grants(payload))
+                    except SafeError as error:
+                        if error.auth_failed:
+                            raise
+                        if error.retry_after is not None:
+                            result['retryAfter'] = max(result.get('retryAfter', 0), error.retry_after)
+                        result['notices'].append(notice)
+                    except Exception:
+                        result['notices'].append(notice)
 
         except SafeError as error:
             result['error'] = str(error)
