@@ -31,7 +31,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Label { text: "TOKEN USAGE"; muted: true; font.pixelSize: Style.font.caption; Layout.fillWidth: true }
         Ui.ButtonGroup {
-            objectName: "usagePeriod"; value: root.period; enabled: root.view.available
+            objectName: "usagePeriod"; value: root.period; enabled: root.view.available; opacity: enabled ? 1 : 0.35
             options: [{value:"1",label:"1D",tooltip:"Today (UTC)"}, {value:"7",label:"7D",tooltip:"7 UTC days including today"}, {value:"30",label:"30D",tooltip:"30 UTC days including today"}]
             onChanged: value => root.period = value
         }
@@ -160,7 +160,7 @@ ColumnLayout {
                 Rectangle { height: parent.height; width: parent.width * Display.metricRatio(group.modelData.tokenMetrics.total, root.totals.tokenMetrics.total.value); color: Commons.Color.accent }
             }
             RowLayout {
-                Layout.fillWidth: true
+                visible: !group.expanded; Layout.fillWidth: true
                 Label {
                     Layout.fillWidth: true; font.pixelSize: Style.font.caption; muted: true; elide: Text.ElideRight
                     text: Display.metricText(group.modelData.tokenMetrics.input) + " in · " + Display.metricText(group.modelData.tokenMetrics.output) + " out · " + Display.metricText(group.modelData.tokenMetrics.cached) + " cached"
@@ -180,7 +180,7 @@ ColumnLayout {
                         Label { Layout.fillWidth: true; text: accountRow.modelData.label; elide: Text.ElideMiddle; font.pixelSize: Style.font.bodySmall }
                         Label { text: Display.metricText(accountRow.modelData.tokenMetrics.total); font.pixelSize: Style.font.bodySmall }
                     }
-                    UsageMetrics { Layout.fillWidth: true; summary: accountRow.modelData }
+                    UsageMetrics { Layout.fillWidth: true; summary: accountRow.modelData; detailed: root.detailsOpen }
                 }
             }
             Item { implicitHeight: Style.space(3) }

@@ -70,7 +70,7 @@ FocusScope {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Style.space(3)
                 Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.title; font.bold: true }
-                Label { text: root.activePane === "usage" ? "Tokens across your subscriptions" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.5) }
+                Label { text: root.activePane === "usage" ? "Across all subscriptions" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.5) }
             }
             Item { Layout.fillWidth: true }
             Ui.PanelActionButton {

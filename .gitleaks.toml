@@ -4,6 +4,13 @@ useDefault = true
 [[allowlists]]
 description = "Documented synthetic auth index used only in collector examples and tests"
 condition = "AND"
-paths = ['''collector/(README\.md|store_test\.go|test_abi\.py)$''']
+paths = ['''collector/(README\.md|store_test\.go|history_test\.go|test_abi\.py)$''']
 regexTarget = "secret"
 regexes = ['''^0123456789abcdef$''']
+
+[[allowlists]]
+description = "Synthetic reversed auth index in the collector boundary test"
+condition = "AND"
+paths = ['''tests/test_collector_history\.py$''']
+regexTarget = "secret"
+regexes = ['''^fedcba9876543210$''']
