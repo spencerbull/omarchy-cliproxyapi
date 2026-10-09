@@ -205,4 +205,85 @@ function metricRatio(metric, maximum) {
     return maximum > 0 && metric && metric.value !== null ? Math.max(0, Math.min(1, metric.value / maximum)) : 0
 }
 
-if (typeof module !== "undefined") module.exports = {usageSummary:usageSummary, usageGroups:usageGroups, usageMetric:usageMetric, metricText:metricText, usageMaximum:usageMaximum, metricRatio:metricRatio, windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}
+// Periods are UTC calendar days including today. Never apportion lifetime totals.
+function tokenAggregate(rows, partial, emptyKnown) {
+    var result = {tokenMetrics: {}, usageRecords: 0}
+    rows.forEach(function(row) { result.usageRecords += row.usageRecords || 0 })
+    tokenKeys.forEach(function(key) {
+        var value = 0, known = 0, records = 0, reported = 0, overflow = false
+        rows.forEach(function(row) {
+            var metric = (row.tokenMetrics || {})[key] || {}
+            records += metric.records || 0; reported += metric.reported || 0
+            if (typeof metric.value === "number" && isFinite(metric.value)) {
+                if (value > 9007199254740991 - metric.value) overflow = true
+                else value += metric.value
+                known++
+            }
+        })
+        result.tokenMetrics[key] = {value: !overflow && (known || (emptyKnown && !rows.length)) ? value : null,
+            reported: reported, records: records, partial: !!partial || overflow || reported < records}
+    })
+    return result
+}
+function tokenGroups(rows, dimension, accounts, privateMode, partial) {
+    var groups = Object.create(null)
+    rows.forEach(function(row) {
+        var key = dimension === "provider" ? row.provider : row.model || "Unknown model"
+        if (!groups[key]) groups[key] = []
+        groups[key].push(row)
+    })
+    return Object.keys(groups).map(function(key) {
+        var source = groups[key], byAccount = Object.create(null)
+        source.forEach(function(row) {
+            var id = JSON.stringify([row.provider, row.accountId])
+            if (!byAccount[id]) byAccount[id] = []
+            byAccount[id].push(row)
+        })
+        var members = Object.keys(byAccount).map(function(id) {
+            var bucket = byAccount[id], first = bucket[0]
+            var account = accounts.find(function(a) { return a.id === first.accountId })
+            return Object.assign(tokenAggregate(bucket, partial, false), {
+                id: id, provider: first.provider,
+                label: account ? accountName(account, privateMode) : "Unlinked accounts"})
+        })
+        members.sort(function(a,b) { return (b.tokenMetrics.total.value || 0) - (a.tokenMetrics.total.value || 0) || a.label.localeCompare(b.label) })
+        var providers = Array.from(new Set(source.map(function(row) { return row.provider }))).sort()
+        return Object.assign(tokenAggregate(source, partial, false), {key: key,
+            label: dimension === "provider" ? providerName(key) : key,
+            providers: providers, accounts: members})
+    }).sort(function(a,b) { return (b.tokenMetrics.total.value || 0) - (a.tokenMetrics.total.value || 0) || a.label.localeCompare(b.label) })
+}
+function tokenWindow(history, days, dimension, accounts, privateMode) {
+    days = [1,7,30].indexOf(Number(days)) >= 0 ? Number(days) : 7
+    var asOf = Date.parse(history && history.asOf || "")
+    var since = Date.parse(history && history.since || "")
+    if (!history || !history.available || !isFinite(asOf) || !isFinite(since)) return {available: false, groups: [], series: [], summary: tokenAggregate([], false, false)}
+    var endDay = new Date(asOf).toISOString().slice(0,10)
+    var start = Date.parse(endDay + "T00:00:00Z") - (days - 1) * 86400000
+    var startDay = new Date(start).toISOString().slice(0,10)
+    var partial = history.partial === true || since > start
+    var rows = (history.buckets || []).filter(function(row) { return row.date >= startDay && row.date <= endDay })
+    var series = []
+    for (var i=0; i<days; i++) {
+        var day = start + i * 86400000, date = new Date(day).toISOString().slice(0,10)
+        var dayRows = rows.filter(function(row) { return row.date === date })
+        var covered = dayRows.length > 0 || day + 86400000 > since
+        series.push({date: date, covered: covered,
+            metric: tokenAggregate(dayRows, history.partial === true || since > day, covered).tokenMetrics.total})
+    }
+    return {available:true, from:startDay, to:endDay, since:history.since, partial:partial,
+        summary:tokenAggregate(rows, partial, since <= asOf),
+        groups:tokenGroups(rows, dimension, accounts || [], privateMode, partial), series:series}
+}
+function tokenShare(metric, total) {
+    if (!metric || metric.value === null || !total || !(total.value > 0)) return "—"
+    var share = metric.value / total.value * 100
+    return share > 0 && share < 1 ? "<1%" : Math.round(share) + "%"
+}
+function utcDate(value) {
+    if (!value || !isFinite(Date.parse(value))) return ""
+    var d = new Date(value)
+    return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()] + " " + d.getUTCDate()
+}
+
+if (typeof module !== "undefined") module.exports = {tokenWindow:tokenWindow, tokenAggregate:tokenAggregate, tokenGroups:tokenGroups, tokenShare:tokenShare, utcDate:utcDate, usageSummary:usageSummary, usageGroups:usageGroups, usageMetric:usageMetric, metricText:metricText, usageMaximum:usageMaximum, metricRatio:metricRatio, windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}

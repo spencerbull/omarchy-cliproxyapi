@@ -25,7 +25,7 @@ FocusScope {
     readonly property var providerOptions: Display.providers(accounts)
     readonly property var visibleAccounts: Display.filtered(accounts, selectedProvider, search.text, "provider", privateMode)
     readonly property int loadedCount: accounts.filter(account => service && service.quotas[account.id] && !service.quotas[account.id].error).length
-    readonly property real preferredHeight: setup ? Style.space(430) : Math.min(Style.space(560), Math.max(Style.space(190), (activePane === "usage" ? usagePane.implicitHeight : accountList.implicitHeight) + Style.space(filterOpen ? 181 : 144)))
+    readonly property real preferredHeight: setup ? Style.space(430) : Math.min(Style.space(560), Math.max(Style.space(190), (activePane === "usage" ? usagePane.implicitHeight : accountList.implicitHeight) + Style.space(filterOpen && activePane === "limits" ? 181 : 144)))
 
     function submit() {
         if (service && service.connectTo(address.text.trim(), secret.text, remember.checked)) {
@@ -70,11 +70,11 @@ FocusScope {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Style.space(3)
                 Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.title; font.bold: true }
-                Label { text: root.activePane === "usage" ? "Account activity" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.5) }
+                Label { text: root.activePane === "usage" ? "Tokens across your subscriptions" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.5) }
             }
             Item { Layout.fillWidth: true }
             Ui.PanelActionButton {
-                iconText: "󰍉"; tooltipText: "Filter subscriptions"; visible: !root.setup; focusable: true
+                iconText: "󰍉"; tooltipText: "Filter subscriptions"; visible: !root.setup && root.activePane === "limits"; focusable: true
                 onClicked: { root.filterOpen = !root.filterOpen; if (root.filterOpen) search.forceActiveFocus() }
             }
             Ui.PanelActionButton {
@@ -104,15 +104,11 @@ FocusScope {
             color: Commons.Color.urgent; wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
         }
         RowLayout {
-            visible: !root.setup && root.filterOpen; Layout.fillWidth: true; spacing: Style.space(7)
+            visible: !root.setup && root.filterOpen && root.activePane === "limits"; Layout.fillWidth: true; spacing: Style.space(7)
             Ui.TextField {
                 id: search; objectName: "accountSearch"; Layout.fillWidth: true
-                placeholderText: "Filter accounts…"; Accessible.name: "Filter accounts"; selectByMouse: true
+                placeholderText: "Search accounts or providers…"; Accessible.name: "Filter accounts"; selectByMouse: true
                 onTextChanged: root.resetScroll()
-            }
-            Ui.Dropdown {
-                Layout.preferredWidth: Style.space(110); showLabel: false; value: root.selectedProvider
-                options: root.providerOptions; onChanged: value => root.selectedProvider = value
             }
         }
         RowLayout {
@@ -154,7 +150,7 @@ FocusScope {
                 UsagePane {
                     id: usagePane; objectName: "usagePane"
                     visible: !root.setup && root.activePane === "usage"; Layout.fillWidth: true
-                    accounts: root.visibleAccounts; snapshotData: root.snapshotData
+                    accounts: root.accounts; snapshotData: root.snapshotData
                     privateMode: root.privateMode; now: root.now
                 }
                 ColumnLayout {
@@ -212,9 +208,9 @@ FocusScope {
                 Layout.fillWidth: true
                 text: !root.service || !root.service.ready ? "Starting…" : root.service.refreshingLimits ? "Refreshing limits… " + root.loadedCount + "/" + root.accounts.length
                     : root.service.busy ? "Updating accounts…" : root.setup ? "PRIVATE CONNECTION" : root.activePane === "usage" ? "Updated " + Display.relative(root.snapshotData.updatedAt, root.now).toLowerCase() + " · auto-refresh 1m" : root.loadedCount + "/" + root.accounts.length + " limits loaded · auto-refresh 5m"
-                color: Qt.alpha(Commons.Color.foreground, 0.45); font.pixelSize: Style.font.caption
+                color: Qt.alpha(Commons.Color.foreground, 0.45); font.pixelSize: Style.font.caption; elide: Text.ElideRight
             }
-            Label { visible: !root.setup; text: root.activePane === "usage" ? "Click provider for accounts" : "Click for activity"; color: Qt.alpha(Commons.Color.foreground, 0.4); font.pixelSize: Style.font.caption }
+            Label { visible: !root.setup && root.activePane === "limits"; text: "Click for activity"; color: Qt.alpha(Commons.Color.foreground, 0.4); font.pixelSize: Style.font.caption }
         }
     }
     component Label: Text {

@@ -1,6 +1,6 @@
 # CLIProxyAPI for Omarchy
 
-Subscription limits and account usage, directly in the Omarchy bar. Switch between remaining allowance and provider/account token breakdowns in a compact native panel with provider logos and automatic refresh.
+Subscription limits and token usage, directly in the Omarchy bar. Switch between remaining allowance and model, provider, and account token breakdowns in a compact native panel with provider logos and automatic refresh.
 
 ![Subscription limits with synthetic accounts](docs/overview.png)
 
@@ -81,7 +81,7 @@ Report whether token data is arriving or collection is waiting for normal traffi
    the container and confirm the backing mount survives container recreation.
 
 4. **Enable with a rollback path.** Save a private backup of the current server
-   configuration and any collector binary being replaced. Merge the collector
+   configuration, any collector binary being replaced, and private collector state. Schema 2 also writes a private `usage.v1.backup.json` on migration; an older collector cannot read schema-2 state. For rollback, stop the service and restore the matching binary and pre-upgrade state together, preserving newer state separately. Merge the collector
    settings into the existing `plugins` section without creating duplicate YAML
    keys or overwriting other plugins. Preserve secrets, provider settings, and
    routing. Apply through the deployment's normal service/container mechanism.
@@ -94,10 +94,10 @@ Report whether token data is arriving or collection is waiting for normal traffi
 5. **Verify the complete integration.** Through the existing authenticated
    management connection, verify `omarchy-usage` is registered and effectively
    enabled in `/v0/management/plugins`. Read
-   `/v0/management/plugins/omarchy-usage/summary`; expect `schemaVersion: 1` and
+   `/v0/management/plugins/omarchy-usage/summary`; expect `schemaVersion: 2` and
    `source: "omarchy-usage"`, and report its `health`/`partial` flags. Reads must
    leave records intact. Confirm state is persisted privately, then refresh the
-   desktop **Usage** pane and verify provider totals and account breakdowns.
+   desktop **Usage** pane and verify 1D/7D/30D ranges, model/provider totals, and account breakdowns. Check `historySince` and `asOf`; recently upgraded installations must mark incomplete periods rather than present backfilled totals.
    Inspect only sanitized status/metrics; never print the management key or raw
    credential responses. Stop automatic retries if authentication is rejected.
 
@@ -125,25 +125,36 @@ Credits, renewal dates, and reset counts appear beneath the meters. Expand an ac
 
 ![Subscription detail with synthetic data](docs/limits.png)
 
-## Usage by provider and account
+## Token usage
 
-The **Usage** tab groups signed-in accounts by provider. Select requests, total,
-input, output, cached, reasoning, cache-read, or cache-write tokens to compare providers with proportional
-bars. Expand a provider for each account's input, output, cached, reasoning,
-cache-read and cache-write metrics, failed attempts, and last activity. Search,
-provider filters and privacy mode apply to both panes. Filtering also scopes the
-totals and comparison bars.
+The **Usage** tab shows one combined token total across all accounts and models,
+with input, output, and cached tokens directly underneath. Choose **1D**, **7D**,
+or **30D** without a dropdown. Ranges are UTC calendar days including today:
+1D is today so far, 7D is today plus the previous six days, and 30D includes the
+previous 29 days. The daily chart and all breakdowns use that same period.
 
-![Usage with a synthetic collector](docs/usage.png)
+**Models** ranks each model by reported tokens, combining accounts and providers
+that use the same model name. **Providers** shows the corresponding provider
+aggregates. Bars show each row's share of the combined token total. Expand a row
+for all token fields and its accounts; **Details** reveals reasoning, cache-read,
+and cache-write totals. Hover a chart bar or token value for exact counts.
+Account search belongs to Limits; it never silently filters Usage totals.
+Privacy mode hides account identities in expanded usage rows.
 
-![Account token breakdown with synthetic data](docs/usage-accounts.png)
+![Token usage with synthetic data](docs/usage.png)
 
-Counts use a single source period: persistent collected attempts when the companion
-is available, otherwise the server's request snapshot. Token fields show reported
-values independently; cache and reasoning may overlap input/output, so they are
-never added together. **`*` means partial coverage; `—` means not reported.**
-Hover a token metric for its exact count and record coverage. Activity strips still
-show recent server activity, which can cover a different period from token totals.
+![Expanded model with synthetic data](docs/usage-accounts.png)
+
+History includes retained usage from accounts that are no longer signed in;
+these appear as **Unlinked accounts** in the breakdown. `*` marks partial coverage
+and `—` means unreported. Before-collection days stay unknown. Cache and reasoning
+can overlap input/output and are never added to the reported total.
+
+Dated model history needs collector **0.2.0 / schema 2**. Upgrading preserves
+existing lifetime totals and starts dated history at upgrade time; it cannot
+reconstruct earlier days or models. Partial periods say when history began.
+Until the collector is upgraded, the pane shows lifetime token totals and provider
+breakdowns with the date controls disabled and a clear upgrade message.
 
 ### Token history on CLIProxyAPI v8
 
@@ -177,7 +188,7 @@ The helper reads that account's DCA credential through management, keeps it requ
 
 The plugin displays what the provider exposes. Some xAI subscriptions do not expose billing limits through read-only endpoints; this is shown explicitly. It never issues inference probes to manufacture quota data. Unsupported providers remain visible with a reason.
 
-Modern activity counters represent upstream attempts, including retries. Recent activity is reported in ten-minute server-time windows and marked approximate. Exact last-request times and tokens require the companion collector or uniquely attributed legacy history. Model history requires legacy data. Credential refresh or file modification dates are never substituted. Accounts are subscriptions or credentials, not individual running agent processes.
+Modern activity counters represent upstream attempts, including retries. Recent activity is reported in ten-minute server-time windows and marked approximate. Exact last-request times and tokens require the companion collector or uniquely attributed legacy history. Dated model history requires the schema-2 collector. Credential refresh or file modification dates are never substituted. Accounts are subscriptions or credentials, not individual running agent processes.
 
 The plugin **never consumes `/usage-queue`, claims reset grants, spends reset credits, changes routing, or sends inference requests**. Availability of a manual reset is information only; this plugin cannot spend it.
 

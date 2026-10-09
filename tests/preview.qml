@@ -48,8 +48,10 @@ ShellRoot {
         function search(value: string): void { dashboard.filterOpen = true; preview.find(dashboard, "accountSearch").text = value }
         function usage(): void { dashboard.activePane = "usage"; dashboard.resetScroll() }
         function limits(): void { dashboard.activePane = "limits"; dashboard.resetScroll() }
-        function usageProvider(value: string): void { preview.find(dashboard, "usagePane").expandedProvider = value }
-        function usageMetric(value: string): void { preview.find(dashboard, "usagePane").metric = value }
+        function usageGroup(value: string): void { preview.find(dashboard, "usagePane").expandedGroup = value }
+        function usagePeriod(value: string): void { preview.find(dashboard, "usagePane").period = value }
+        function usageBreakdown(value: string): void { preview.find(dashboard, "usagePane").breakdown = value }
+        function usageDetails(): void { preview.find(dashboard, "usagePane").detailsOpen = !preview.find(dashboard, "usagePane").detailsOpen }
         function overview(): void { dashboard.filterOpen = false; dashboard.expandedId = ""; dashboard.resetScroll() }
         function refreshAll(): void { backend.refresh(true) }
         function privacy(): void { dashboard.privateMode = !dashboard.privateMode }

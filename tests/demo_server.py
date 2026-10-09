@@ -26,7 +26,7 @@ def fixture():
                 amount = 0
             failed = 1 if amount and errors and bucket in (12, 15) else 0
             rows.append({'time': left.strftime('%H:%M') + '-' + right.strftime('%H:%M'), 'success': amount, 'failed': failed})
-        accounts.append({'auth_index': 'demo-account-' + str(index), 'provider': provider,
+        accounts.append({'auth_index': f'{index + 1:016x}', 'provider': provider,
             'email': email, 'account_type': 'oauth', 'status': 'active', 'unavailable': index == 3,
             'success': total - errors, 'failed': errors, 'recent_requests': rows,
             'name': 'synthetic-' + str(index) + '.json',
@@ -39,7 +39,7 @@ def usage_fixture():
     """Recorded request tokens deliberately include partial reporting, not fake zeros."""
     now = datetime.datetime.now(datetime.timezone.utc)
     rows = []
-    for index, account in enumerate(('demo-account-0', 'demo-account-1', 'demo-account-2', 'demo-account-3')):
+    for index, account in enumerate(tuple(f'{i + 1:016x}' for i in range(4))):
         for request in range(3):
             tokens = {'input_tokens': (index + 1) * 1200 + request * 90,
                       'output_tokens': 240 + request * 40, 'cached_tokens': 480 + request * 80,
@@ -63,19 +63,31 @@ def usage_fixture():
 
 def collector_fixture():
     now = datetime.datetime.now(datetime.timezone.utc)
-    rows = []
-    for index, family in enumerate(['codex', 'claude', 'codex', 'claude']):
-        factor = index + 1
-        rows.append({'authIndex': 'demo-account-' + str(index), 'provider': family,
-            'requests': 120 * factor, 'failed': index,
-            'firstRequestAt': (now - datetime.timedelta(days=3)).isoformat(),
-            'lastRequestAt': (now - datetime.timedelta(minutes=index * 5)).isoformat(),
-            'tokenMetrics': {'total': 1200000 * factor, 'input': 1000000 * factor,
-                'output': 200000 * factor, 'cached': 750000 * factor,
-                'reasoning': 80000 * factor, 'cacheRead': 700000 * factor, 'cacheWrite': 50000 * factor},
-            'metricSamples': dict.fromkeys(['total', 'input', 'output', 'cached', 'reasoning', 'cacheRead', 'cacheWrite'], 120 * factor - index)})
-    return {'schemaVersion': 1, 'source': 'omarchy-usage', 'partial': False, 'health': 'ok',
-            'startedAt': (now - datetime.timedelta(days=3)).isoformat(), 'accounts': rows}
+    names = [('codex', 'gpt-5.4', 0), ('claude', 'claude-opus-4-6', 1),
+             ('codex', 'gpt-5.4-mini', 2), ('claude', 'claude-sonnet-4-6', 3),
+             ('codex', 'gpt-5.4', 2)]
+    keys = ['total', 'input', 'output', 'cached', 'reasoning', 'cacheRead', 'cacheWrite']
+    buckets, accounts = [], {}
+    for day in range(24):
+        date = now - datetime.timedelta(days=day)
+        for index, (family, model, account) in enumerate(names):
+            factor = (5 - index) * (4 + (day * 7 + index * 3) % 11)
+            metrics = dict(zip(keys, [12000*factor, 10000*factor, 2000*factor, 7500*factor, 800*factor, 7000*factor, 500*factor]))
+            count = 8 * factor
+            buckets.append({'date': date.date().isoformat(), 'authIndex': f'{account + 1:016x}',
+                'provider': family, 'model': model, 'requests': count,
+                'tokenMetrics': metrics, 'metricSamples': dict.fromkeys(keys, count)})
+            row = accounts.setdefault(account, {'authIndex': f'{account + 1:016x}', 'provider': family,
+                'requests': 0, 'failed': 0, 'firstRequestAt': (now - datetime.timedelta(days=23)).isoformat(),
+                'lastRequestAt': now.isoformat(), 'tokenMetrics': dict.fromkeys(keys, 0), 'metricSamples': dict.fromkeys(keys, 0)})
+            row['requests'] += count
+            for key in keys:
+                row['tokenMetrics'][key] += metrics[key]
+                row['metricSamples'][key] += count
+    return {'schemaVersion': 2, 'source': 'omarchy-usage', 'partial': False, 'health': 'ok',
+            'startedAt': (now - datetime.timedelta(days=23)).isoformat(), 'updatedAt': now.isoformat(),
+            'historySince': (now - datetime.timedelta(days=23)).isoformat(), 'asOf': now.isoformat(),
+            'historyPartial': False, 'historyDropped': 0, 'accounts': list(accounts.values()), 'buckets': buckets}
 
 
 class DemoHandler(BaseHTTPRequestHandler):
@@ -142,7 +154,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         url = data.get('url', '')
         if url == 'https://chatgpt.com/backend-api/wham/usage':
-            is_work = data.get('auth_index') == 'demo-account-0'
+            is_work = data.get('auth_index') == '0000000000000001'
             body = {'plan_type': 'pro' if is_work else 'plus', 'rate_limit': {
                 'primary_window': {'used_percent': 28 if is_work else 61, 'limit_window_seconds': 18000, 'reset_at': (now + datetime.timedelta(hours=2, minutes=14)).timestamp()},
                 'secondary_window': {'used_percent': 53 if is_work else 24, 'limit_window_seconds': 604800, 'reset_at': (now + datetime.timedelta(days=4, hours=8)).timestamp()}},
@@ -157,7 +169,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         elif url == 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1':
             body = {'cedar_ember': {'eligible':True, 'grants':[{'id':'synthetic-grant', 'resets_total':1, 'resets_left':1, 'usable_now':True, 'paused':False, 'ends_at':(now + datetime.timedelta(days=7)).isoformat()}]}}
         elif url == 'https://api.anthropic.com/api/oauth/usage':
-            limited = data.get('auth_index') == 'demo-account-3'
+            limited = data.get('auth_index') == '0000000000000004'
             body = {'five_hour': {'utilization': 100 if limited else 12, 'resets_at': (now + datetime.timedelta(hours=3)).isoformat()},
                 'seven_day': {'utilization': 94 if limited else 34, 'resets_at': (now + datetime.timedelta(days=2)).isoformat()},
                 'limits': [{'kind':'weekly_scoped', 'percent': 0 if limited else 20, 'resets_at':(now + datetime.timedelta(days=2)).isoformat(), 'is_active':not limited, 'scope':{'model':{'display_name':'Fable 5'}}}],

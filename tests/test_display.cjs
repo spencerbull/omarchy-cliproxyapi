@@ -153,3 +153,60 @@ test('unused attributable collector accounts do not make complete token totals p
   assert.equal(d.usageSummary([empty]).tokenMetrics.input.value,null);
   assert.equal(d.usageSummary([active,{...empty,usageRequests:null}]).tokenMetrics.input.partial,true);
 });
+
+const tokenRow = (date, model, provider, accountId, value, records=1, reported=1) => ({date,model,provider,accountId,usageRecords:records,
+  tokenMetrics:Object.fromEntries(['total','input','output','cached','reasoning','cacheRead','cacheWrite'].map(key=>[key,{value,records,reported}]))});
+const history = buckets => ({available:true,since:'2026-09-01T00:00:00Z',asOf:'2026-10-08T18:30:00Z',partial:false,buckets});
+test('calendar ranges include today and exact UTC boundaries for 1, 7, and 30 days',()=>{
+ const h=history([tokenRow('2026-10-08','m','codex','a',1),tokenRow('2026-10-02','m','codex','a',10),
+  tokenRow('2026-10-01','m','codex','a',100),tokenRow('2026-09-09','m','codex','a',1000),tokenRow('2026-09-08','m','codex','a',10000),tokenRow('2026-10-09','m','codex','a',100000)]);
+ assert.equal(d.tokenWindow(h,1,'model',[],false).summary.tokenMetrics.total.value,1);
+ assert.equal(d.tokenWindow(h,7,'model',[],false).summary.tokenMetrics.total.value,11);
+ const month=d.tokenWindow(h,30,'model',[],false);
+ assert.equal(month.summary.tokenMetrics.total.value,1111);
+ assert.equal(month.from,'2026-09-09'); assert.equal(month.series.length,30);
+ assert.equal(month.series.reduce((sum,p)=>sum+p.metric.value,0),1111);
+});
+test('same model aggregates all accounts and providers including unlinked history exactly once',()=>{
+ const h=history([tokenRow('2026-10-08','shared','codex','a',100),tokenRow('2026-10-07','shared','claude','b',200),
+  tokenRow('2026-10-08','other','codex',null,50)]);
+ const accounts=[{id:'a',label:'private@example.com'},{id:'b',label:'work@example.com'}];
+ const view=d.tokenWindow(h,7,'model',accounts,false);
+ assert.equal(view.summary.tokenMetrics.total.value,350);
+ assert.equal(view.groups[0].label,'shared'); assert.equal(view.groups[0].tokenMetrics.total.value,300);
+ assert.deepEqual(view.groups[0].providers,['claude','codex']);
+ assert.equal(view.groups[1].accounts[0].label,'Unlinked accounts');
+ assert.equal(d.tokenWindow(h,7,'provider',accounts,false).groups.find(g=>g.key==='codex').tokenMetrics.total.value,150);
+ assert.equal(JSON.stringify(d.tokenWindow(h,7,'model',accounts,true)).includes('private@example.com'),false);
+});
+test('coverage distinguishes missing history, no traffic and unreported tokens',()=>{
+ const h={...history([tokenRow('2026-10-08','m','codex','a',null,1,0)]),since:'2026-10-07T12:00:00Z'};
+ const view=d.tokenWindow(h,7,'model',[],false);
+ assert.equal(view.partial,true); assert.equal(view.summary.tokenMetrics.total.value,null);
+ assert.equal(view.series[0].covered,false); assert.equal(view.series[0].metric.value,null);
+ assert.equal(view.series[5].covered,true); assert.equal(view.series[5].metric.value,0); assert.equal(view.series[5].metric.partial,true);
+ const empty=d.tokenWindow(history([]),7,'model',[],false);
+ assert.equal(empty.summary.tokenMetrics.total.value,0); assert.equal(empty.partial,false);
+ assert.equal(d.tokenWindow({available:false},7,'model',[],false).available,false);
+ assert.equal(d.tokenWindow({...history([]),asOf:'invalid'},7,'model',[],false).available,false);
+});
+test('token totals stay independent and model names cannot mutate object prototypes',()=>{
+ const row=tokenRow('2026-10-08','__proto__','codex','a',100);
+ row.tokenMetrics.cached.value=900; row.tokenMetrics.reasoning.value=200;
+ const view=d.tokenWindow(history([row]),1,'model',[],false);
+ assert.equal(view.summary.tokenMetrics.total.value,100);
+ assert.equal(view.groups[0].key,'__proto__'); assert.equal(view.groups[0].tokenMetrics.cached.value,900);
+ assert.equal(d.tokenShare({value:1},{value:1000}),'<1%'); assert.equal(d.tokenShare({value:null},{value:1000}),'—');
+});
+test('partial records and collector gaps stay visible in aggregate and each group',()=>{
+ const h={...history([tokenRow('2026-10-08','m','codex','a',100,2,1)]),partial:true};
+ const view=d.tokenWindow(h,1,'model',[],false);
+ assert.equal(view.summary.tokenMetrics.total.partial,true); assert.equal(view.groups[0].tokenMetrics.total.partial,true);
+ assert.equal(view.groups[0].accounts[0].tokenMetrics.total.partial,true);
+});
+
+test('aggregate overflow becomes unknown rather than an imprecise token count',()=>{
+ const rows=[tokenRow('2026-10-08','m','codex','a',Number.MAX_SAFE_INTEGER),tokenRow('2026-10-08','m','codex','b',1)];
+ const result=d.tokenAggregate(rows,false,false);
+ assert.equal(result.tokenMetrics.total.value,null); assert.equal(result.tokenMetrics.total.partial,true);
+});

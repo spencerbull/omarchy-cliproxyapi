@@ -25,7 +25,7 @@ Item {
             y: Math.floor(index / 3) * Style.space(38)
             width: root.width / 3
             spacing: Style.space(2)
-            Text { text: cell.modelData.label; color: Qt.alpha(Commons.Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: Style.font.caption }
+            Text { text: cell.modelData.label; color: Qt.alpha(Commons.Color.foreground, 0.6); font.family: Style.font.family; font.pixelSize: Style.font.caption }
             Text {
                 text: Display.metricText(cell.metric); color: Commons.Color.foreground
                 font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
