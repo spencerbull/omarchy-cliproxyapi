@@ -80,7 +80,7 @@ func TestPrivacyAndRoute(t *testing.T) {
 	if _, e := handleMethod("plugin.register", config); e != nil {
 		t.Fatal(e)
 	}
-	payload := `{"RequestID":"sensitive-request","AuthIndex":"0123456789abcdef","Provider":"claude","AuthID":"private-file.json","APIKey":"private-key","Model":"private-model","ResponseHeaders":{"Authorization":["private-token"]},"Failure":{"Body":"private-body"},"RequestedAt":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","Detail":{"InputTokens":12,"TotalTokens":12}}`
+	payload := `{"RequestID":"sensitive-request","AuthIndex":"0123456789abcdef","Provider":"claude","AuthID":"private-file.json","APIKey":"private-key","Model":"gpt-test","ResponseHeaders":{"Authorization":["private-token"]},"Failure":{"Body":"private-body"},"RequestedAt":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","Detail":{"InputTokens":12,"TotalTokens":12}}`
 	if _, e := handleMethod("usage.handle", []byte(payload)); e != nil {
 		t.Fatal(e)
 	}
@@ -94,7 +94,7 @@ func TestPrivacyAndRoute(t *testing.T) {
 	}
 	var env struct{ Result struct{ Body []byte } }
 	_ = json.Unmarshal(summary, &env)
-	for _, s := range []string{"sensitive-request", "private-file", "private-key", "private-model", "private-token", "private-body"} {
+	for _, s := range []string{"sensitive-request", "private-file", "private-key", "private-token", "private-body"} {
 		if strings.Contains(string(raw), s) || strings.Contains(string(env.Result.Body), s) {
 			t.Fatalf("leaked %s", s)
 		}

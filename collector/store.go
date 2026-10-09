@@ -15,11 +15,13 @@ import (
 )
 
 const maxAccounts = 1024
+const maxHistoryBuckets = 2048
 const maxDedup = 4096
 const maxState = 4 << 20
 const maxCounter int64 = 9007199254740991 // Safe in the desktop JavaScript client.
 var indexPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 var providerPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,47}$`)
+var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/()+-]{0,127}$`)
 var metricNames = []string{"total", "input", "output", "cached", "reasoning", "cacheRead", "cacheWrite"}
 var errStorage = errors.New("collector storage unavailable")
 
@@ -30,6 +32,7 @@ type usageEvent struct {
 	RequestID   string
 	AuthIndex   string
 	Provider    string
+	Model       string
 	RequestedAt time.Time
 	Failed      bool
 	Detail      usageDetail
@@ -44,15 +47,28 @@ type account struct {
 	TokenMetrics   map[string]*int64 `json:"tokenMetrics"`
 	MetricSamples  map[string]int64  `json:"metricSamples"`
 }
+type historyBucket struct {
+	Date          string            `json:"date"`
+	Provider      string            `json:"provider"`
+	AuthIndex     string            `json:"authIndex"`
+	Model         string            `json:"model"`
+	Requests      int64             `json:"requests"`
+	TokenMetrics  map[string]*int64 `json:"tokenMetrics"`
+	MetricSamples map[string]int64  `json:"metricSamples"`
+}
 type state struct {
-	SchemaVersion int                 `json:"schemaVersion"`
-	StartedAt     time.Time           `json:"startedAt"`
-	UpdatedAt     time.Time           `json:"updatedAt"`
-	Partial       bool                `json:"partial"`
-	Dropped       int64               `json:"dropped"`
-	Clean         bool                `json:"clean"`
-	Accounts      map[string]*account `json:"accounts"`
-	Seen          []string            `json:"seen"`
+	HistorySince   time.Time                 `json:"historySince"`
+	HistoryPartial bool                      `json:"historyPartial"`
+	HistoryDropped int64                     `json:"historyDropped"`
+	Buckets        map[string]*historyBucket `json:"buckets"`
+	SchemaVersion  int                       `json:"schemaVersion"`
+	StartedAt      time.Time                 `json:"startedAt"`
+	UpdatedAt      time.Time                 `json:"updatedAt"`
+	Partial        bool                      `json:"partial"`
+	Dropped        int64                     `json:"dropped"`
+	Clean          bool                      `json:"clean"`
+	Accounts       map[string]*account       `json:"accounts"`
+	Seen           []string                  `json:"seen"`
 }
 type collector struct {
 	mu        sync.Mutex
@@ -61,6 +77,7 @@ type collector struct {
 	state     state
 	seen      map[string]bool
 	storageOK bool
+	now       func() time.Time
 }
 
 // Private files must belong to this process even when the server runs as root.
@@ -110,9 +127,9 @@ func openCollector(dir string) (*collector, error) {
 		f.Close()
 		return nil, errors.New("collector data directory already in use")
 	}
-	c := &collector{dir: dir, lock: f, seen: map[string]bool{}, storageOK: true}
+	c := &collector{dir: dir, lock: f, seen: map[string]bool{}, storageOK: true, now: func() time.Time { return time.Now().UTC() }}
 	now := time.Now().UTC()
-	c.state = state{SchemaVersion: 1, StartedAt: now, UpdatedAt: now, Accounts: map[string]*account{}, Seen: []string{}}
+	c.state = state{SchemaVersion: 2, StartedAt: now, UpdatedAt: now, HistorySince: now, Buckets: map[string]*historyBucket{}, Accounts: map[string]*account{}, Seen: []string{}}
 	path := filepath.Join(dir, "usage.json")
 	if fi, e := os.Lstat(path); e == nil {
 		if !privateOwned(fi, false) || fi.Size() > maxState {
@@ -120,9 +137,23 @@ func openCollector(dir string) (*collector, error) {
 			return nil, errStorage
 		}
 		raw, e := os.ReadFile(path)
-		if e != nil || json.Unmarshal(raw, &c.state) != nil || !validState(c.state) {
+		var loaded state
+		if e != nil || json.Unmarshal(raw, &loaded) != nil || !validState(loaded) {
 			c.closeLock()
 			return nil, errors.New("collector state is invalid; existing data preserved")
+		}
+		c.state = loaded
+		if c.state.SchemaVersion == 1 {
+			// Preserve an exact private rollback snapshot before the first schema-2 write.
+			if err := c.backupV1(raw); err != nil {
+				c.closeLock()
+				return nil, err
+			}
+			c.state.SchemaVersion = 2
+			c.state.HistorySince = now
+			c.state.HistoryPartial = false
+			c.state.HistoryDropped = 0
+			c.state.Buckets = map[string]*historyBucket{}
 		}
 		if !c.state.Clean {
 			c.state.Partial = true
@@ -134,6 +165,7 @@ func openCollector(dir string) (*collector, error) {
 		c.closeLock()
 		return nil, errStorage
 	}
+	c.pruneHistory(now)
 	c.state.Clean = false
 	if c.persist() != nil {
 		c.closeLock()
@@ -142,7 +174,10 @@ func openCollector(dir string) (*collector, error) {
 	return c, nil
 }
 func validState(s state) bool {
-	if s.SchemaVersion != 1 || s.Accounts == nil || len(s.Accounts) > maxAccounts || len(s.Seen) > maxDedup || s.StartedAt.IsZero() || s.UpdatedAt.Before(s.StartedAt) || s.Dropped < 0 || s.Dropped > maxCounter {
+	if (s.SchemaVersion != 1 && s.SchemaVersion != 2) || s.Accounts == nil || len(s.Accounts) > maxAccounts || len(s.Seen) > maxDedup || s.StartedAt.IsZero() || s.UpdatedAt.Before(s.StartedAt) || s.Dropped < 0 || s.Dropped > maxCounter {
+		return false
+	}
+	if s.SchemaVersion == 2 && !validHistory(s) {
 		return false
 	}
 	for key, a := range s.Accounts {
@@ -222,7 +257,7 @@ func (c *collector) add(e usageEvent) error {
 	if c.lock == nil {
 		return errStorage
 	}
-	if !indexPattern.MatchString(e.AuthIndex) || !providerPattern.MatchString(e.Provider) || e.RequestedAt.Before(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)) || e.RequestedAt.After(time.Now().Add(5*time.Minute)) || len(e.RequestID) > 128 {
+	if !indexPattern.MatchString(e.AuthIndex) || !providerPattern.MatchString(e.Provider) || e.RequestedAt.Before(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)) || e.RequestedAt.After(c.now().Add(5*time.Minute)) || len(e.RequestID) > 128 {
 		return c.drop()
 	}
 	values := []int64{e.Detail.TotalTokens, e.Detail.InputTokens, e.Detail.OutputTokens, e.Detail.CachedTokens, e.Detail.ReasoningTokens, e.Detail.CacheReadTokens, e.Detail.CacheCreationTokens}
@@ -289,12 +324,15 @@ func (c *collector) add(e usageEvent) error {
 			c.state.Seen = c.state.Seen[1:]
 		}
 	}
-	c.state.UpdatedAt = time.Now().UTC()
+	c.addHistory(e, values, known)
+	c.state.UpdatedAt = c.now()
 	return c.save()
 }
 func (c *collector) summary() map[string]any {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	c.pruneHistory(now)
 	// JSON round-trip produces an immutable snapshot while the lock is held.
 	accounts := make([]*account, 0, len(c.state.Accounts))
 	for _, a := range c.state.Accounts {
@@ -307,10 +345,18 @@ func (c *collector) summary() map[string]any {
 	var frozen any
 	_ = json.Unmarshal(raw, &frozen)
 	health := "ok"
-	if !c.storageOK || c.state.Partial {
+	if !c.storageOK || c.state.Partial || c.state.HistoryPartial {
 		health = "degraded"
 	}
-	return map[string]any{"schemaVersion": 1, "source": "omarchy-usage", "startedAt": c.state.StartedAt, "updatedAt": c.state.UpdatedAt, "coverage": "Observed upstream attempts since collector start", "partial": c.state.Partial, "dropped": c.state.Dropped, "health": health, "notice": "Observed attempts only. SDK-normalized zero counters may mean an omitted submetric. All-zero records have unknown tokens. Cache and reasoning counters may overlap input/output; do not add them to totals.", "accounts": frozen}
+	buckets := make([]*historyBucket, 0, len(c.state.Buckets))
+	for _, b := range c.state.Buckets {
+		buckets = append(buckets, b)
+	}
+	sort.Slice(buckets, func(i, j int) bool { return bucketKey(buckets[i]) < bucketKey(buckets[j]) })
+	raw, _ = json.Marshal(buckets)
+	var frozenBuckets any
+	_ = json.Unmarshal(raw, &frozenBuckets)
+	return map[string]any{"schemaVersion": 2, "historySince": c.state.HistorySince, "asOf": now, "historyPartial": c.state.HistoryPartial || c.state.Partial || !c.storageOK, "historyDropped": c.state.HistoryDropped, "buckets": frozenBuckets, "source": "omarchy-usage", "startedAt": c.state.StartedAt, "updatedAt": c.state.UpdatedAt, "coverage": "Observed upstream attempts since collector start", "partial": c.state.Partial, "dropped": c.state.Dropped, "health": health, "notice": "Observed attempts only. SDK-normalized zero counters may mean an omitted submetric. All-zero records have unknown tokens. Cache and reasoning counters may overlap input/output; do not add them to totals.", "accounts": frozen}
 }
 func (c *collector) closeLock() {
 	if c.lock != nil {

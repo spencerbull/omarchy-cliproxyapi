@@ -77,7 +77,12 @@ management client/key handling rather than placing keys in shell command lines.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "historySince": "2026-01-01T00:00:00Z",
+  "asOf": "2026-01-01T01:00:00Z",
+  "historyPartial": false,
+  "historyDropped": 0,
+  "buckets": [],
   "source": "omarchy-usage",
   "startedAt": "2026-01-01T00:00:00Z",
   "updatedAt": "2026-01-01T01:00:00Z",
@@ -123,9 +128,23 @@ management client/key handling rather than placing keys in shell command lines.
   records for each metric; `tokenMetrics` sums them and is null when none are
   known. A sample count below requests means the sum is partial, not a complete
   total. Provider totals should preserve that coverage in the UI.
-- History is a **lifetime aggregate since `startedAt`**, with no daily time series
-  or rolling retention window. It survives clean restarts and never stores raw
-  requests. In-flight events can be lost during abrupt termination; an unclean
+- `accounts` remains a **lifetime aggregate since `startedAt`**. Schema 2 also
+  exports `buckets` with one row per UTC calendar day, provider, account and
+  model. Each row has `date` (`YYYY-MM-DD`), `provider`, `authIndex`, `model`,
+  `requests`, `tokenMetrics` and `metricSamples`; the metrics use the same shape
+  and accounting rules as account totals above. `Model` is copied from the
+  upstream SDK `UsageRecord.Model`, not the user-facing alias or response model.
+  Empty models become `unknown`; invalid names also become `unknown` and mark
+  history partial. Names must be 1–128 ASCII characters matching
+  `[A-Za-z0-9][A-Za-z0-9._:/()+-]{0,127}`.
+- History retains **30 UTC calendar days including today**; 1 day means today
+  from 00:00 UTC, 7 days means today and the preceding 6 UTC dates. These are not
+  rolling 24/168-hour windows. `asOf` is the export time, even on an idle server;
+  `historySince` is the time dated/model collection began. Windows crossing
+  that timestamp have incomplete coverage. Older events remain in lifetime
+  totals without being inserted into current history. Future-day events within
+  the SDK clock-skew allowance are omitted from history and marked partial.
+- Both aggregates survive clean restarts and never store raw requests. In-flight events can be lost during abrupt termination; an unclean
   restart permanently marks this history `partial: true`. The host does not
   offer replay/acknowledgement to usage plugins, so even `health: ok` means the
   collector is healthy, not that every event was delivered by the host.
@@ -134,6 +153,12 @@ management client/key handling rather than placing keys in shell command lines.
   retains aggregates in memory and subsequent writes try again, but disk history
   can lag. A disk that cannot write cannot reliably preserve its own failure
   marker; the previous unclean state helps detect this on restart.
+- `historyPartial` additionally marks unknown/invalid model attribution and
+  history bucket capacity or overflow. `historyDropped` counts events omitted
+  from dated history by those capacity/overflow limits. Their lifetime account
+  totals continue to accumulate. These coverage markers persist even when old
+  buckets expire. The desktop retains removed/unmatched accounts in its global
+  and model history totals, without exporting raw account indexes to QML.
 
 ## Persistence and limits
 
@@ -145,16 +170,45 @@ observer. Each data directory has one exclusive writer. Changing `data_dir`
 requires a server restart, and binary replacement should also use a restart;
 concurrent replacement loaders are refused while the old writer owns its lock.
 
-Limits: 1,024 provider/account pairs, 4,096 recent hashed execution IDs for
+Limits: 1,024 lifetime provider/account pairs, 2,048 dated/model buckets across
+all 30 retained UTC dates, 4,096 recent hashed execution IDs for
 best-effort duplicate suppression across restarts, 4 MiB persisted JSON, and
 JavaScript-safe nonnegative integer counters. Duplicates older than that bounded
 ring, or records without a RequestID, cannot be deduplicated. Invalid identity,
 timestamps or counters are dropped and mark history partial. State corruption
 fails registration and preserves the file; it never silently resets history.
 
-Only opaque auth indexes, provider identifiers, aggregate counters, timestamps,
-health metadata and SHA-256 execution-ID hashes are stored. API keys, auth IDs,
-filenames, model names, account emails, prompts, response bodies and headers are
-ignored. Do not place the private data directory inside a source checkout. To
+Only opaque auth indexes, provider identifiers, bounded model identifiers,
+aggregate counters, timestamps, health metadata and SHA-256 execution-ID hashes
+are stored. Model names can reveal which models an installation uses; keep
+collector state private. API keys, auth IDs, filenames, account emails, prompts,
+response bodies and headers are ignored. Do not place the private data directory inside a source checkout. To
 retire history, stop the server, archive the directory privately, configure a new
 empty private directory, then restart. There is no automated deletion or reset.
+
+
+## Upgrade from collector 0.1 / schema 1
+
+Collector 0.2 adds dated/model history. Before replacing the binary, stop the
+server through its normal procedure and privately back up its config, collector
+binary and data directory. Preserve the same owner and private permissions.
+Build and ABI-test the replacement for the deployment's actual architecture and
+libc, then restart through the normal procedure. Deploying this repository does
+not automatically replace the server collector.
+
+On first load, a valid schema-1 `usage.json` is copied byte-for-byte to private
+`usage.v1.backup.json`, flushed to disk, and migrated to schema 2. Lifetime totals,
+original `startedAt`, deduplication hashes and coverage warnings are preserved.
+Dated/model history begins at upgrade time; the old aggregate cannot be
+backfilled into dates or models. Existing schema-2 history survives restarts.
+Malformed state, unsafe permissions, a failed backup, or a conflicting existing
+backup stop registration and preserve the source file rather than reset totals.
+An identical existing backup permits retry after an interrupted migration.
+
+A schema-1 binary cannot read schema-2 state. For rollback, stop the server,
+privately archive the entire current state, restore the old binary and the
+pre-upgrade `usage.v1.backup.json` as `usage.json` with service ownership and mode
+0600, then restart. This restores only the pre-upgrade totals: usage collected
+after upgrade is retained in the archive but is not importable by schema 1.
+Archive/remove the old migration backup before a later new migration, since a
+conflicting backup is intentionally never overwritten.

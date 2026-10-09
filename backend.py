@@ -421,6 +421,7 @@ def snapshot(client, remember, targets=None):
     return {'type': 'snapshot', 'url': client.url, 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
             'usageAvailable': usage_available, 'tokenUsageAvailable': usage_available,
             'usageSource': 'legacy' if usage_available else 'unavailable',
+            'usageHistory': {'available': False, 'reason': 'Dated token history requires the updated usage collector.'},
             'usageUnattributedRecords': unattributed,
             'tokenSemantics': 'Reported legacy counters: cache and reasoning may overlap input/output; cache read/write cannot be separated, and totals follow the server accounting.',
             'metricsLabel': 'Requests' if usage_available else 'Upstream attempts',
@@ -669,7 +670,8 @@ def collector_usage(client, accounts, files):
         return {'collectorNotice': 'Collector could not be read. Showing server snapshot data.'}
     if payload is None:
         return {}
-    if (payload.get('schemaVersion') != 1 or payload.get('source') != 'omarchy-usage'
+    if (not isinstance(payload, dict) or type(payload.get('schemaVersion')) is not int
+            or payload.get('schemaVersion') not in (1, 2) or payload.get('source') != 'omarchy-usage'
             or not isinstance(payload.get('accounts'), list) or len(payload['accounts']) > 10000
             or not iso_timestamp(payload.get('startedAt'))
             or not isinstance(payload.get('partial'), bool) or payload.get('health') not in ('ok', 'degraded')):
@@ -729,7 +731,73 @@ def collector_usage(client, accounts, files):
     return {'usageSource': 'collector', 'tokenUsageAvailable': True,
             'usageSince': iso_timestamp(payload['startedAt']), 'usagePartial': partial,
             'usageUnattributedRecords': unmatched, 'tokenSemantics': COLLECTOR_SEMANTICS,
-            'collectorNotice': 'Collector reports incomplete coverage. Totals may omit usage.' if partial else ''}
+            'collectorNotice': 'Collector reports incomplete coverage. Totals may omit usage.' if partial else '',
+            'usageHistory': collector_history(payload, join, client, files)}
+
+
+def collector_history(payload, join, client, files):
+    """Validate a bounded UTC-day export separately so bad history cannot hide lifetime usage."""
+    unavailable = {'available': False, 'reason': 'Dated token history is invalid or unavailable.'}
+    if payload.get('schemaVersion') == 1:
+        return {'available': False, 'reason': 'Update the server usage collector to enable day and model totals.'}
+    since = iso_timestamp(payload.get('historySince'))
+    as_of = iso_timestamp(payload.get('asOf'))
+    started = iso_timestamp(payload.get('startedAt'))
+    if not since or not as_of or not started:
+        return unavailable
+    since_time, as_of_time, started_time = map(datetime.datetime.fromisoformat, (since, as_of, started))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if (since_time < started_time or since_time > as_of_time or started_time.year < 2020
+            or as_of_time > now + datetime.timedelta(minutes=5)
+            or not isinstance(payload.get('historyPartial'), bool)
+            or usage_counter(payload.get('historyDropped')) is None
+            or not isinstance(payload.get('buckets'), list) or len(payload['buckets']) > 2048):
+        return unavailable
+    first_day = as_of_time.date() - datetime.timedelta(days=29)
+    forbidden = [client.key] + [mapping(row).get('account') for row in files
+                               if mapping(row).get('account_type') == 'api_key'
+                               and isinstance(mapping(row).get('account'), str)]
+    rows, seen = [], set()
+    totals = dict.fromkeys(LEGACY_TOKEN_FIELDS, 0)
+    records_total = 0
+    for raw in payload['buckets']:
+        raw = mapping(raw)
+        date, family, index, model = (raw.get(k) for k in ('date', 'provider', 'authIndex', 'model'))
+        if (not isinstance(date, str) or not valid_day(date)
+                or not first_day <= datetime.date.fromisoformat(date) <= as_of_time.date()
+                or not isinstance(family, str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,47}', family)
+                or not isinstance(index, str) or not re.fullmatch(r'[a-f0-9]{16}', index)
+                or not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/()+-]{0,127}', model)
+                or any(secret and secret in model for secret in forbidden)):
+            return unavailable
+        key = (date, family, index, model)
+        count = usage_counter(raw.get('requests'))
+        if key in seen or count is None or count == 0:
+            return unavailable
+        seen.add(key)
+        records_total += count
+        if usage_counter(records_total) is None:
+            return unavailable
+        metrics = {}
+        for name in LEGACY_TOKEN_FIELDS:
+            value = mapping(raw.get('tokenMetrics')).get(name)
+            samples = usage_counter(mapping(raw.get('metricSamples')).get(name))
+            if (samples is None or samples > count
+                    or (value is not None and usage_counter(value) is None)
+                    or (samples > 0) != (value is not None)):
+                return unavailable
+            totals[name] += value or 0
+            if usage_counter(totals[name]) is None:
+                return unavailable
+            metrics[name] = {'value': value, 'reported': samples, 'records': count}
+        family = provider(family)
+        account = join.get((index, family))
+        rows.append({'date': date, 'provider': family, 'accountId': account['id'] if account else None,
+                     'model': model, 'usageRecords': count, 'tokenMetrics': metrics})
+    return {'available': True, 'since': since, 'asOf': as_of,
+            'partial': payload['historyPartial'] or payload['partial'] or payload['health'] != 'ok'
+                       or payload['historyDropped'] > 0,
+            'buckets': sorted(rows, key=lambda row: (row['date'], row['provider'], row['model'], row['accountId'] or ''))}
 
 
 def valid_auth_filename(value):

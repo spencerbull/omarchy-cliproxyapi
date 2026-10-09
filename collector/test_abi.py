@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix="omarchy-usage-abi-") as directory:
     path = "/v0/management/plugins/omarchy-usage/summary"
     assert routes == {"routes": [{"Method": "GET", "Path": path}]}
     event = {"RequestID": "synthetic-execution", "AuthIndex": "0123456789abcdef",
-             "Provider": "codex", "RequestedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+             "Provider": "codex", "Model": "gpt-test", "RequestedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
              "Detail": {"InputTokens": 100, "OutputTokens": 20, "TotalTokens": 120,
                         "CachedTokens": 25, "ReasoningTokens": 5},
              "APIKey": "synthetic-never-persist", "AuthID": "synthetic-private-file"}
@@ -66,6 +66,11 @@ with tempfile.TemporaryDirectory(prefix="omarchy-usage-abi-") as directory:
         response = call("management.handle", {"Method": "GET", "Path": path})
         assert response["StatusCode"] == 200
         result = json.loads(base64.b64decode(response["Body"]))
+        assert result["schemaVersion"] == 2 and result["historySince"] and result["asOf"]
+        bucket = result["buckets"][0]
+        assert bucket["model"] == "gpt-test" and bucket["requests"] == 1
+        assert bucket["tokenMetrics"]["total"] == 120
+        assert not result["historyPartial"]
         account = result["accounts"][0]
         assert account["requests"] == 1
         assert account["tokenMetrics"]["total"] == 120

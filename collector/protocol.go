@@ -13,7 +13,7 @@ var runtimeMu sync.RWMutex
 var running *collector
 
 func registration() map[string]any {
-	return map[string]any{"schema_version": 6, "metadata": map[string]any{"Name": "omarchy-usage", "Version": "0.1.0", "Author": "spencerbull", "GitHubRepository": "https://github.com/spencerbull/omarchy-cliproxyapi", "ConfigFields": []any{map[string]any{"Name": "data_dir", "Type": "string", "Description": "Required private absolute directory for persistent aggregate usage; change requires server restart."}}}, "capabilities": map[string]bool{"usage_plugin": true, "management_api": true}}
+	return map[string]any{"schema_version": 6, "metadata": map[string]any{"Name": "omarchy-usage", "Version": "0.2.0", "Author": "spencerbull", "GitHubRepository": "https://github.com/spencerbull/omarchy-cliproxyapi", "ConfigFields": []any{map[string]any{"Name": "data_dir", "Type": "string", "Description": "Required private absolute directory for persistent aggregate usage; change requires server restart."}}}, "capabilities": map[string]bool{"usage_plugin": true, "management_api": true}}
 }
 func handleMethod(method string, raw []byte) ([]byte, error) {
 	switch method {

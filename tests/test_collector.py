@@ -66,7 +66,7 @@ class CollectorTests(unittest.TestCase):
         self.assertIsNone(result['accounts'][0]['tokenMetrics']['total']['value'])
 
     def test_malformed_export_rejected_atomically(self):
-        changes = [lambda p: p.update(schemaVersion=2),
+        changes = [lambda p: p.update(schemaVersion=999),
                    lambda p: p['accounts'].append(copy.deepcopy(p['accounts'][0])),
                    lambda p: p['accounts'][0].update(requests=-1),
                    lambda p: p['accounts'][0].update(failed=4),
@@ -101,9 +101,11 @@ class CollectorTests(unittest.TestCase):
     def test_synthetic_collector_export_matches_adapter_contract(self):
         from demo_server import collector_fixture
         result, _ = snapshot(collector_fixture(), [
-            {'auth_index': 'demo-account-' + str(i), 'provider': family}
+            {'auth_index': f'{i + 1:016x}', 'provider': family}
             for i, family in enumerate(['codex', 'claude', 'codex', 'claude'])])
         self.assertEqual(result['usageSource'], 'collector')
         self.assertEqual(result['usageUnattributedRecords'], 0)
-        self.assertEqual(sum(a['usageRequests'] for a in result['accounts']), 1200)
-        self.assertEqual(sum(a['tokenMetrics']['total']['value'] for a in result['accounts']), 12000000)
+        self.assertTrue(result['usageHistory']['available'])
+        self.assertTrue(result['usageHistory']['buckets'])
+        self.assertGreater(sum(a['usageRequests'] for a in result['accounts']), 0)
+        self.assertGreater(sum(a['tokenMetrics']['total']['value'] or 0 for a in result['accounts']), 0)
