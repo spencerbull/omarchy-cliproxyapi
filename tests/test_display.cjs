@@ -210,3 +210,26 @@ test('aggregate overflow becomes unknown rather than an imprecise token count',(
  const result=d.tokenAggregate(rows,false,false);
  assert.equal(result.tokenMetrics.total.value,null); assert.equal(result.tokenMetrics.total.partial,true);
 });
+
+test('account charts sum daily total tokens across models without using request activity',()=>{
+ const account={id:'a',provider:'codex',usageSource:'collector',usageRequests:99999,history:[{requests:999999}]};
+ const h=history([tokenRow('2026-10-08','model-one','codex','a',100),
+  tokenRow('2026-10-08','model-two','codex','a',200),tokenRow('2026-10-07','model-one','codex','a',20),
+  tokenRow('2026-10-08','model-one','codex','b',1000),tokenRow('2026-10-08','model-one','claude','a',2000),
+  tokenRow('2026-10-08','model-one','codex',null,3000),tokenRow('2026-10-01','model-one','codex','a',5000)]);
+ const series=d.accountTokenSeries(h,account);
+ assert.equal(series.length,7); assert.equal(series[6].metric.value,300);
+ assert.equal(series.reduce((total,point)=>total+point.metric.value,0),320);
+ assert.equal(series[0].metric.value,0);
+});
+test('account charts preserve unknown history and partial token reporting',()=>{
+ const account={id:'a',provider:'codex',usageSource:'collector',usageRequests:1,history:[{requests:999}]};
+ assert.deepEqual(d.accountTokenSeries({available:false},account),[]);
+ assert.deepEqual(d.accountTokenSeries(history([]),{...account,usageRequests:null}),[]);
+ assert.deepEqual(d.accountTokenSeries(history([]),{...account,usageSource:'legacy'}),[]);
+ const h={...history([tokenRow('2026-10-08','m','codex','a',null,1,0)]),since:'2026-10-08T10:00:00Z'};
+ const series=d.accountTokenSeries(h,account);
+ assert.equal(series[0].covered,false); assert.equal(series[0].metric.value,null);
+ assert.equal(series[6].metric.value,null); assert.equal(series[6].metric.partial,true);
+ assert.equal(d.accountTokenSeries(history([]),{...account,usageRequests:0})[6].metric.value,0);
+});

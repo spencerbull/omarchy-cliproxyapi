@@ -275,6 +275,15 @@ function tokenWindow(history, days, dimension, accounts, privateMode) {
         summary:tokenAggregate(rows, partial, since <= asOf),
         groups:tokenGroups(rows, dimension, accounts || [], privateMode, partial), series:series}
 }
+// Account charts use the collector's dated token totals, never request buckets.
+function accountTokenSeries(history, account) {
+    if (!history || !history.available || !account || !account.id
+        || account.usageSource !== "collector" || typeof account.usageRequests !== "number") return []
+    var scoped = Object.assign({}, history, {buckets: (history.buckets || []).filter(function(row) {
+        return row.accountId === account.id && row.provider === account.provider
+    })})
+    return tokenWindow(scoped, 7, "model", [account], false).series
+}
 function tokenShare(metric, total) {
     if (!metric || metric.value === null || !total || !(total.value > 0)) return "—"
     var share = metric.value / total.value * 100
@@ -286,4 +295,4 @@ function utcDate(value) {
     return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getUTCMonth()] + " " + d.getUTCDate()
 }
 
-if (typeof module !== "undefined") module.exports = {tokenWindow:tokenWindow, tokenAggregate:tokenAggregate, tokenGroups:tokenGroups, tokenShare:tokenShare, utcDate:utcDate, usageSummary:usageSummary, usageGroups:usageGroups, usageMetric:usageMetric, metricText:metricText, usageMaximum:usageMaximum, metricRatio:metricRatio, windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}
+if (typeof module !== "undefined") module.exports = {accountTokenSeries:accountTokenSeries, tokenWindow:tokenWindow, tokenAggregate:tokenAggregate, tokenGroups:tokenGroups, tokenShare:tokenShare, utcDate:utcDate, usageSummary:usageSummary, usageGroups:usageGroups, usageMetric:usageMetric, metricText:metricText, usageMaximum:usageMaximum, metricRatio:metricRatio, windowState:windowState, retryWait:retryWait, resetShort:resetShort, quotaFacts:quotaFacts, quotaWindows:quotaWindows, quotaDetails:quotaDetails, dueQuotaIds:dueQuotaIds, mergeQuota:mergeQuota, retainedQuotas: retainedQuotas, count: count, compact: compact, relative: relative, reset: reset, activity: activity, filtered: filtered, providers: providers, summary: summary}

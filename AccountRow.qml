@@ -9,6 +9,7 @@ import "Display.js" as Display
 ColumnLayout {
     id: root
     required property var account
+    property var usageHistory: null
     property var quota: null
     property bool quotaBusy: false
     property bool quotaQueued: false
@@ -18,6 +19,7 @@ ColumnLayout {
     property bool consentPending: false
     property bool consented: false
     property double now: Date.now()
+    readonly property var tokenSeries: expanded ? Display.accountTokenSeries(usageHistory, account) : []
     readonly property var windows: Display.quotaWindows(quota)
     readonly property string facts: Display.quotaFacts(quota, now)
     signal toggled()
@@ -106,7 +108,11 @@ ColumnLayout {
     ColumnLayout {
         visible: root.expanded
         Layout.fillWidth: true; spacing: Style.space(7)
-        ActivityStrip { Layout.fillWidth: true; buckets: root.account.history || []; compact: true }
+        Label {
+            text: root.tokenSeries.length ? "DAILY TOKENS · 7D" : "Token history unavailable"
+            font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.55)
+        }
+        ActivityStrip { visible: root.tokenSeries.length > 0; Layout.fillWidth: true; buckets: root.tokenSeries; compact: true }
         RowLayout {
             Layout.fillWidth: true
             Label {

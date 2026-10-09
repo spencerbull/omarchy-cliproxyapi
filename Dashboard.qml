@@ -131,6 +131,7 @@ FocusScope {
                         AccountRow {
                             required property var modelData
                             Layout.fillWidth: true; account: modelData
+                            usageHistory: root.snapshotData.usageHistory || null
                             expanded: root.expandedId === modelData.id; privateMode: root.privateMode; now: root.now
                             quota: root.service ? (root.service.quotas[modelData.id] || null) : null
                             quotaBusy: root.service ? root.service.quotaAccountId === modelData.id : false
