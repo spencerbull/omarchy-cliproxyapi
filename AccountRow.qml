@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 import "Display.js" as Display
 
@@ -46,22 +47,22 @@ ColumnLayout {
                 Label {
                     Layout.fillWidth: true
                     text: Display.providerName(root.account.provider) + (((root.quota && root.quota.plan) || root.account.plan) ? " · " + ((root.quota && root.quota.plan) || root.account.plan) : "")
-                    color: Qt.alpha(Color.foreground, 0.5); font.pixelSize: Style.font.caption; elide: Text.ElideRight
+                    color: Qt.alpha(Commons.Color.foreground, 0.5); font.pixelSize: Style.font.caption; elide: Text.ElideRight
                 }
             }
             Label {
                 visible: root.account.status !== "active"
                 text: root.account.status === "unavailable" && root.account.nextRetryAt ? "Cooldown" : ({disabled: "Disabled", unavailable: "Unavailable", error: "Attention", unknown: ""})[root.account.status] || ""
-                color: Color.urgent; font.pixelSize: Style.font.caption
+                color: Commons.Color.urgent; font.pixelSize: Style.font.caption
             }
-            Label { text: root.expanded ? "−" : "+"; color: Qt.alpha(Color.foreground, 0.4) }
+            Label { text: root.expanded ? "−" : "+"; color: Qt.alpha(Commons.Color.foreground, 0.4) }
         }
     }
     QuotaWindows { Layout.fillWidth: true; windows: root.windows; now: root.now }
     Label {
         Layout.fillWidth: true; visible: root.facts !== ""
         text: root.facts; wrapMode: Text.Wrap
-        color: Qt.alpha(Color.foreground, 0.55); font.pixelSize: Style.font.caption
+        color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption
     }
     Label {
         Layout.fillWidth: true
@@ -70,13 +71,13 @@ ColumnLayout {
             : root.quota && root.quota.error ? root.quota.error
             : !root.account.quotaSupported ? (root.account.quotaReason || "No quota endpoint for this account.")
             : root.quota ? "No limits reported by this subscription." : "Waiting for limits…"
-        color: root.quota && root.quota.error ? Color.urgent : Qt.alpha(Color.foreground, 0.5)
+        color: root.quota && root.quota.error ? Commons.Color.urgent : Qt.alpha(Commons.Color.foreground, 0.5)
         font.pixelSize: Style.font.bodySmall; wrapMode: Text.Wrap
     }
     Label {
         Layout.fillWidth: true; visible: root.windows.length > 0 && !!(root.quota && root.quota.error)
         text: "Showing previous limits · " + (root.quota ? root.quota.error || "" : "")
-        color: Color.urgent; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
+        color: Commons.Color.urgent; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
     }
     ColumnLayout {
         visible: root.account.quotaConsentRequired === true && !root.consented
@@ -84,7 +85,7 @@ ColumnLayout {
         Label {
             Layout.fillWidth: true; wrapMode: Text.Wrap
             text: root.consentPending ? "Muse returns limits by issuing an API key. Allow this lookup and automatic refresh for this session? The key stays out of the interface and storage." : "Muse requires permission to load limits."
-            color: Qt.alpha(Color.foreground, 0.55); font.pixelSize: Style.font.bodySmall
+            color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.bodySmall
         }
         RowLayout {
             Ui.Button {
@@ -105,7 +106,7 @@ ColumnLayout {
             Layout.fillWidth: true
             Label { text: Display.count(root.account.requests) + (root.account.metricsLabel === "Recorded requests" ? " requests" : " attempts"); font.pixelSize: Style.font.bodySmall }
             Item { Layout.fillWidth: true }
-            Label { text: Display.count(root.account.failed) + " failed"; color: root.account.failed ? Color.urgent : Qt.alpha(Color.foreground, 0.5); font.pixelSize: Style.font.bodySmall }
+            Label { text: Display.count(root.account.failed) + " failed"; color: root.account.failed ? Commons.Color.urgent : Qt.alpha(Commons.Color.foreground, 0.5); font.pixelSize: Style.font.bodySmall }
         }
         ActivityStrip { Layout.fillWidth: true; buckets: root.account.history || []; compact: true }
         Label {
@@ -113,29 +114,29 @@ ColumnLayout {
             text: root.account.lastActivityKind === "exact" ? "Last request " + new Date(root.account.lastRequestAt).toLocaleString()
                 : root.account.lastActivityKind === "window" ? "Last active ≈ " + Display.activity(root.account, root.now) + " · server time"
                 : "Last request not reported"
-            color: Qt.alpha(Color.foreground, 0.5); font.pixelSize: Style.font.caption
+            color: Qt.alpha(Commons.Color.foreground, 0.5); font.pixelSize: Style.font.caption
         }
         Label {
             Layout.fillWidth: true; visible: !!root.account.nextRetryAt
             text: "Retry available " + (root.account.nextRetryAt ? new Date(root.account.nextRetryAt).toLocaleString() : "")
-            color: Color.urgent; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
+            color: Commons.Color.urgent; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
         }
         Label {
             Layout.fillWidth: true; visible: Display.quotaDetails(root.quota) !== ""
             text: Display.quotaDetails(root.quota)
-            color: Qt.alpha(Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
+            color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
         }
         Label {
             Layout.fillWidth: true; visible: !!(root.quota && (root.quota.notices || []).length)
             text: root.quota ? (root.quota.notices || []).join("\n") : ""
-            color: Qt.alpha(Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
+            color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
         }
         RowLayout {
             Layout.fillWidth: true
             Label {
                 Layout.fillWidth: true
                 text: root.quota && root.quota.updatedAt ? "Limits checked " + Display.relative(root.quota.updatedAt, root.now).toLowerCase() : "Limits not checked"
-                color: Qt.alpha(Color.foreground, 0.45); font.pixelSize: Style.font.caption
+                color: Qt.alpha(Commons.Color.foreground, 0.45); font.pixelSize: Style.font.caption
             }
             Ui.Button {
                 visible: root.account.quotaSupported === true && (!root.account.quotaConsentRequired || root.consented)
@@ -148,7 +149,7 @@ ColumnLayout {
     Item { implicitHeight: Style.space(2) }
     Ui.PanelSeparator { Layout.fillWidth: true }
     component Label: Text {
-        textFormat: Text.PlainText; color: Color.foreground
+        textFormat: Text.PlainText; color: Commons.Color.foreground
         font.family: Style.font.family; font.pixelSize: Style.font.body
     }
 }

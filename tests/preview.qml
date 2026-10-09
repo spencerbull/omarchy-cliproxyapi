@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import "PLUGIN_URL" as Plugin
 
 ShellRoot {
@@ -27,7 +28,7 @@ ShellRoot {
         implicitWidth: 416; implicitHeight: 596
         minimumSize: Qt.size(416, 596)
         maximumSize: Qt.size(416, 596)
-        color: Color.popups.background
+        color: Commons.Color.popups.background
         Plugin.Dashboard {
             id: dashboard
             anchors.centerIn: parent

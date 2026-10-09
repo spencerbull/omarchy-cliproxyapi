@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 import "Display.js" as Display
 
@@ -69,7 +70,7 @@ FocusScope {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Style.space(3)
                 Label { text: "CLIProxyAPI"; font.pixelSize: Style.font.title; font.bold: true }
-                Label { text: root.activePane === "usage" ? "Account activity" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.5) }
+                Label { text: root.activePane === "usage" ? "Account activity" : "Subscription limits"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.5) }
             }
             Item { Layout.fillWidth: true }
             Ui.PanelActionButton {
@@ -100,7 +101,7 @@ FocusScope {
         Label {
             Layout.fillWidth: true; visible: root.service && root.service.error !== ""
             text: (root.service ? root.service.error : "") + (root.hasData ? " Showing previous results." : "")
-            color: Color.urgent; wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
+            color: Commons.Color.urgent; wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
         }
         RowLayout {
             visible: !root.setup && root.filterOpen; Layout.fillWidth: true; spacing: Style.space(7)
@@ -116,9 +117,9 @@ FocusScope {
         }
         RowLayout {
             visible: !root.setup && root.activePane === "limits"; Layout.fillWidth: true
-            Label { text: root.accounts.length + " ACCOUNTS"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
+            Label { text: root.accounts.length + " ACCOUNTS"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.45) }
             Item { Layout.fillWidth: true }
-            Label { text: "LEFT     RESETS IN"; font.pixelSize: Style.font.caption; color: Qt.alpha(Color.foreground, 0.45) }
+            Label { text: "LEFT     RESETS IN"; font.pixelSize: Style.font.caption; color: Qt.alpha(Commons.Color.foreground, 0.45) }
         }
         Controls.ScrollView {
             id: scroll; objectName: "accountScroll"
@@ -147,7 +148,7 @@ FocusScope {
                     Label {
                         Layout.fillWidth: true; visible: root.visibleAccounts.length === 0
                         text: root.accounts.length ? "No subscriptions match this filter." : "No signed-in accounts were returned by the proxy."
-                        color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap; topPadding: Style.space(10)
+                        color: Qt.alpha(Commons.Color.foreground, 0.6); wrapMode: Text.Wrap; topPadding: Style.space(10)
                     }
                 }
                 UsagePane {
@@ -162,7 +163,7 @@ FocusScope {
                     Label {
                         Layout.fillWidth: true
                         text: "See remaining allowance and reset times across your signed-in accounts. Limits load automatically."
-                        color: Qt.alpha(Color.foreground, 0.6); wrapMode: Text.Wrap
+                        color: Qt.alpha(Commons.Color.foreground, 0.6); wrapMode: Text.Wrap
                     }
                     Ui.PanelSectionHeader { text: "SERVER URL" }
                     Ui.TextField {
@@ -177,12 +178,12 @@ FocusScope {
                     }
                     Controls.CheckBox {
                         id: remember; text: "Remember on this device"
-                        font.family: Style.font.family; font.pixelSize: Style.font.body; palette.windowText: Color.foreground
+                        font.family: Style.font.family; font.pixelSize: Style.font.body; palette.windowText: Commons.Color.foreground
                     }
                     Label {
                         Layout.fillWidth: true
                         text: remember.checked ? "Stored in a private plaintext file outside the plugin." : "Session only. The key stays in memory."
-                        color: Qt.alpha(Color.foreground, 0.5); wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
+                        color: Qt.alpha(Commons.Color.foreground, 0.5); wrapMode: Text.Wrap; font.pixelSize: Style.font.bodySmall
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -200,7 +201,7 @@ FocusScope {
                     Label {
                         Layout.fillWidth: true
                         text: "HTTPS for remote servers. Local HTTP is supported on loopback. Muse quota access requires separate permission."
-                        color: Qt.alpha(Color.foreground, 0.45); wrapMode: Text.Wrap; font.pixelSize: Style.font.caption
+                        color: Qt.alpha(Commons.Color.foreground, 0.45); wrapMode: Text.Wrap; font.pixelSize: Style.font.caption
                     }
                 }
             }
@@ -211,13 +212,13 @@ FocusScope {
                 Layout.fillWidth: true
                 text: !root.service || !root.service.ready ? "Starting…" : root.service.refreshingLimits ? "Refreshing limits… " + root.loadedCount + "/" + root.accounts.length
                     : root.service.busy ? "Updating accounts…" : root.setup ? "PRIVATE CONNECTION" : root.activePane === "usage" ? "Updated " + Display.relative(root.snapshotData.updatedAt, root.now).toLowerCase() + " · auto-refresh 1m" : root.loadedCount + "/" + root.accounts.length + " limits loaded · auto-refresh 5m"
-                color: Qt.alpha(Color.foreground, 0.45); font.pixelSize: Style.font.caption
+                color: Qt.alpha(Commons.Color.foreground, 0.45); font.pixelSize: Style.font.caption
             }
-            Label { visible: !root.setup; text: root.activePane === "usage" ? "Click provider for accounts" : "Click for activity"; color: Qt.alpha(Color.foreground, 0.4); font.pixelSize: Style.font.caption }
+            Label { visible: !root.setup; text: root.activePane === "usage" ? "Click provider for accounts" : "Click for activity"; color: Qt.alpha(Commons.Color.foreground, 0.4); font.pixelSize: Style.font.caption }
         }
     }
     component Label: Text {
-        textFormat: Text.PlainText; color: Color.foreground
+        textFormat: Text.PlainText; color: Commons.Color.foreground
         font.family: Style.font.family; font.pixelSize: Style.font.body
     }
 }

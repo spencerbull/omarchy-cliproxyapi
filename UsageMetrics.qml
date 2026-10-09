@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui as Ui
 import "Display.js" as Display
 
@@ -24,9 +25,9 @@ Item {
             y: Math.floor(index / 3) * Style.space(38)
             width: root.width / 3
             spacing: Style.space(2)
-            Text { text: cell.modelData.label; color: Qt.alpha(Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: Style.font.caption }
+            Text { text: cell.modelData.label; color: Qt.alpha(Commons.Color.foreground, 0.45); font.family: Style.font.family; font.pixelSize: Style.font.caption }
             Text {
-                text: Display.metricText(cell.metric); color: Color.foreground
+                text: Display.metricText(cell.metric); color: Commons.Color.foreground
                 font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
                 Accessible.name: cell.modelData.label + ": " + Display.metricText(cell.metric, true)
             }

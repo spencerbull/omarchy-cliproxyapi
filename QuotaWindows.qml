@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as Commons
 import "Display.js" as Display
 
 ColumnLayout {
@@ -19,13 +20,13 @@ ColumnLayout {
             readonly property bool known: modelData.usedPercent !== null && modelData.usedPercent !== undefined
             readonly property real remaining: known ? Math.max(0, Math.min(100, 100 - modelData.usedPercent)) : 0
             readonly property string availability: Display.windowState(modelData)
-            readonly property color tint: availability === "Blocked" || (remaining <= 10 && known && availability === "") ? Color.urgent : Color.foreground
+            readonly property color tint: availability === "Blocked" || (remaining <= 10 && known && availability === "") ? Commons.Color.urgent : Commons.Color.foreground
             Accessible.role: Accessible.ProgressBar
             Accessible.name: modelData.label + ": " + (availability ? availability + ". " : "") + (known ? remaining.toFixed(0) + " percent remaining. " : "Not reported. ") + Display.reset(modelData.resetAt, root.now)
             Text {
                 Layout.preferredWidth: Style.space(100)
                 text: row.modelData.label; textFormat: Text.PlainText
-                color: Qt.alpha(Color.foreground, 0.7); elide: Text.ElideRight
+                color: Qt.alpha(Commons.Color.foreground, 0.7); elide: Text.ElideRight
                 font.family: Style.font.family; font.pixelSize: Style.font.bodySmall
                 HoverHandler { id: labelHover }
                 Controls.ToolTip.visible: labelHover.hovered
@@ -58,7 +59,7 @@ ColumnLayout {
             Text {
                 Layout.preferredWidth: Style.space(55)
                 text: Display.resetShort(row.modelData.resetAt, root.now)
-                color: Qt.alpha(Color.foreground, 0.45); horizontalAlignment: Text.AlignRight
+                color: Qt.alpha(Commons.Color.foreground, 0.45); horizontalAlignment: Text.AlignRight
                 font.family: Style.font.family; font.pixelSize: Style.font.caption
                 HoverHandler { id: resetHover }
                 Controls.ToolTip.visible: resetHover.hovered

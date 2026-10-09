@@ -1,12 +1,13 @@
 import QtQuick
 import QtQuick.Controls as Controls
 import qs.Commons
+import qs.Commons as Commons
 import "Display.js" as Display
 
 Item {
     id: root
     property var buckets: []
-    property color foreground: Color.foreground
+    property color foreground: Commons.Color.foreground
     property bool compact: false
     readonly property real peak: Math.max(1, ...buckets.map(row => Number(row.requests || 0)))
     readonly property int bucketCount: buckets.length || 20
@@ -34,7 +35,7 @@ Item {
                     anchors.bottom: parent.bottom
                     width: parent.width
                     height: bucket.modelData.requests > 0 ? bucket.volumeHeight * (bucket.modelData.failed || 0) / bucket.modelData.requests : 0
-                    color: Color.urgent
+                    color: Commons.Color.urgent
                 }
                 MouseArea {
                     anchors.fill: parent

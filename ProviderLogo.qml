@@ -1,12 +1,13 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as Commons
 
 Item {
     id: root
     property string provider: ""
     property int size: Style.space(18)
     implicitWidth: size; implicitHeight: size
-    readonly property bool light: (Color.popups.background.r * 0.299 + Color.popups.background.g * 0.587 + Color.popups.background.b * 0.114) > 0.55
+    readonly property bool light: (Commons.Color.popups.background.r * 0.299 + Commons.Color.popups.background.g * 0.587 + Commons.Color.popups.background.b * 0.114) > 0.55
     readonly property string asset: ({codex: "codex" + (light ? "-light" : ""), claude: "claude", xai: "xai" + (light ? "-light" : ""), meta: "meta"})[provider] || ""
     Image {
         anchors.fill: parent
@@ -18,7 +19,7 @@ Item {
     }
     Text {
         anchors.centerIn: parent; visible: root.asset === ""
-        text: "󰒋"; color: Color.foreground
+        text: "󰒋"; color: Commons.Color.foreground
         font.family: Style.font.family; font.pixelSize: root.size
     }
 }
