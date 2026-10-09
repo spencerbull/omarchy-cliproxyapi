@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import qs.Commons
 import qs.Commons as Commons
@@ -63,6 +64,9 @@ ColumnLayout {
         Layout.fillWidth: true; visible: root.facts !== ""
         text: root.facts; wrapMode: Text.Wrap
         color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption
+        HoverHandler { id: factsHover }
+        Controls.ToolTip.visible: factsHover.hovered && Display.quotaDetails(root.quota) !== ""
+        Controls.ToolTip.text: Display.quotaDetails(root.quota)
     }
     Label {
         Layout.fillWidth: true
@@ -102,45 +106,27 @@ ColumnLayout {
     ColumnLayout {
         visible: root.expanded
         Layout.fillWidth: true; spacing: Style.space(7)
-        RowLayout {
-            Layout.fillWidth: true
-            Label { text: Display.count(root.account.requests) + (root.account.metricsLabel === "Recorded requests" ? " requests" : " attempts"); font.pixelSize: Style.font.bodySmall }
-            Item { Layout.fillWidth: true }
-            Label { text: Display.count(root.account.failed) + " failed"; color: root.account.failed ? Commons.Color.urgent : Qt.alpha(Commons.Color.foreground, 0.5); font.pixelSize: Style.font.bodySmall }
-        }
         ActivityStrip { Layout.fillWidth: true; buckets: root.account.history || []; compact: true }
-        Label {
-            Layout.fillWidth: true; wrapMode: Text.Wrap
-            text: root.account.lastActivityKind === "exact" ? "Last request " + new Date(root.account.lastRequestAt).toLocaleString()
-                : root.account.lastActivityKind === "window" ? "Last active ≈ " + Display.activity(root.account, root.now) + " · server time"
-                : "Last request not reported"
-            color: Qt.alpha(Commons.Color.foreground, 0.5); font.pixelSize: Style.font.caption
-        }
-        Label {
-            Layout.fillWidth: true; visible: !!root.account.nextRetryAt
-            text: "Retry available " + (root.account.nextRetryAt ? new Date(root.account.nextRetryAt).toLocaleString() : "")
-            color: Commons.Color.urgent; font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
-        }
-        Label {
-            Layout.fillWidth: true; visible: Display.quotaDetails(root.quota) !== ""
-            text: Display.quotaDetails(root.quota)
-            color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
-        }
-        Label {
-            Layout.fillWidth: true; visible: !!(root.quota && (root.quota.notices || []).length)
-            text: root.quota ? (root.quota.notices || []).join("\n") : ""
-            color: Qt.alpha(Commons.Color.foreground, 0.55); font.pixelSize: Style.font.caption; wrapMode: Text.Wrap
-        }
         RowLayout {
             Layout.fillWidth: true
             Label {
-                Layout.fillWidth: true
-                text: root.quota && root.quota.updatedAt ? "Limits checked " + Display.relative(root.quota.updatedAt, root.now).toLowerCase() : "Limits not checked"
-                color: Qt.alpha(Commons.Color.foreground, 0.45); font.pixelSize: Style.font.caption
+                Layout.fillWidth: true; elide: Text.ElideRight
+                text: root.account.nextRetryAt ? (Display.resetShort(root.account.nextRetryAt, root.now) === "Due" ? "Retry available" : "Retry in " + Display.resetShort(root.account.nextRetryAt, root.now))
+                    : root.account.lastActivityKind === "exact" ? "Last request " + Display.relative(root.account.lastRequestAt, root.now).toLowerCase()
+                    : root.account.lastActivityKind === "window" ? "Last active ≈ " + Display.activity(root.account, root.now)
+                    : "Last activity —"
+                color: root.account.nextRetryAt ? Commons.Color.urgent : Qt.alpha(Commons.Color.foreground, 0.55)
+                font.pixelSize: Style.font.caption
+                HoverHandler { id: activityHover }
+                Controls.ToolTip.visible: activityHover.hovered
+                Controls.ToolTip.text: root.account.nextRetryAt ? "Retry available " + new Date(root.account.nextRetryAt).toLocaleString()
+                    : root.account.lastActivityKind === "exact" ? new Date(root.account.lastRequestAt).toLocaleString()
+                    : root.account.lastActivityKind === "window" ? "Approximate activity window · server time" : "Last request not reported"
             }
             Ui.Button {
                 visible: root.account.quotaSupported === true && (!root.account.quotaConsentRequired || root.consented)
                 text: root.quotaBusy ? "Checking…" : Display.retryWait(root.quota, root.now) > 0 ? "Wait " + Math.ceil(Display.retryWait(root.quota, root.now) / 60000) + "m" : "Refresh"
+                tooltipText: root.quota && root.quota.updatedAt ? "Limits checked " + Display.relative(root.quota.updatedAt, root.now).toLowerCase() : "Refresh subscription limits"
                 enabled: !root.busy && Display.retryWait(root.quota, root.now) <= 0; focusable: true
                 onClicked: root.quotaRequested(false)
             }

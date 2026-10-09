@@ -121,7 +121,7 @@ Every account shows its reported quota windows without needing to expand it. Met
 
 Limits load automatically after connecting, then refresh at most every five minutes while the panel is open. The refresh button or a middle-click on the bar requests a full refresh. Accounts are fetched sequentially, provider retry delays are respected, and failures retain the previous successful limits with a visible error. Authentication failures stop polling until you reconnect.
 
-Credits, renewal dates, and reset counts appear beneath the meters. Expand an account for exact renewal/reset-expiry details, request activity, last request, failed attempts, and per-account refresh. The search button reveals account/provider filters. The eye button hides identities and clears the search.
+Credits, renewal dates, and reset counts appear beneath the meters. Expand an account for a compact activity chart, last activity, and refresh. Hover the credit/reset summary for exact renewal and reset-expiry details; hover a reset countdown for its full timestamp. The search button reveals account/provider filters. The eye button hides identities and clears the search.
 
 ![Subscription detail with synthetic data](docs/limits.png)
 
